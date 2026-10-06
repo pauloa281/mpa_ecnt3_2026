@@ -1,0 +1,1188 @@
+---
+title: "Econometria III <br> Atividade 1"
+subtitle: "Introdução ao Modelo de Efeitos Fixos em R"
+author: "SEU NOME"
+lang: pt-BR
+format:
+  html:
+    toc: true
+    embed-resources: true
+execute:
+  echo: true
+  warning: false
+  message: false
+---
+
+```{r}
+#| label: setup
+#| include: false
+
+# Configura a exibição de números.
+options(digits = 5, scipen = 999)
+
+# Carrega os pacotes necessários à atividade.
+library(tidyverse)
+library(plm)
+library(modelsummary)
+library(fixest)
+
+# Define o caminho relativo dos arquivos de dados.
+path_vtreinamais <- "dados/brutos/equipes-varsity-treina-mais.csv"
+path_maia2018 <- "dados/brutos/Data_AgricultureClimate.csv"
+
+# Importa os arquivos usando o caminho relativo.
+dados_vtreinamais <- read_csv(path_vtreinamais)
+dados_maia2018 <- read_csv(path_maia2018)
+```
+
+
+## Objetivos da atividade
+
+Nesta atividade, vamos operacionalizar em R os principais conceitos
+desenvolvidos na Aula 1.
+
+Ao longo do roteiro, você irá:
+
+1. retomar, com o exemplo simulado JV/Varsity, como diferenças de nível entre
+   grupos podem afetar a estimação quando são omitidas;
+2. reconhecer e declarar a estrutura unidade–tempo de um painel real com os
+   dados de Maia et al. (2018);
+3. estimar e interpretar uma regressão *pooled OLS* como referência inicial;
+4. estimar um modelo de efeitos fixos individuais pelo estimador *within* e
+   interpretar seus coeficientes a partir da variação dentro das unidades ao
+   longo do tempo;
+5. examinar a amostra efetivamente utilizada na estimação e a disponibilidade
+   de variação *within*;
+6. comparar as estimativas *pooled* e de efeitos fixos e aplicar o teste $F$
+   conjunto dos efeitos individuais;
+7. estimar um modelo com efeitos fixos de unidade e de tempo e interpretar como
+   essa especificação altera o controle da heterogeneidade no painel.
+
+O objetivo é conectar:
+
+- **Estrutura dos dados**;
+- **Especificação do modelo**;
+- **Estimação em R**;
+- **Resultados**;
+- **Interpretação econométrica**.
+
+
+
+## Dados JV/Varsity: um corte transversal
+
+Começaremos retomando o exemplo simulado das equipes JV e Varsity utilizado
+na Aula 1.
+
+Nesse conjunto de dados:
+
+- cada observação corresponde a **um atleta**;
+- cada atleta é observado **uma única vez**;
+- `equipe`, `horas` e `desempenho` descrevem características observadas
+  para esse atleta;
+- não existe uma dimensão temporal associada a cada atleta.
+
+Portanto, esses dados constituem um **corte transversal (*cross-section*)**,
+e não dados em painel.
+
+Como os dados são simulados, conhecemos o processo gerador utilizado:
+
+$$
+desempenho_i = 30D_{JV,i} + 60D_{Varsity,i} + 0,10\,horas_i + \varepsilon_i,
+$$
+
+em que $D_{JV,i}$ e $D_{Varsity,i}$ são dummies binárias que identificam a equipe do atleta.
+
+Assim, sabemos que:
+
+- JV e Varsity possuem diferentes níveis de **habilidade não observada**,
+  que geram interceptos de **30 para JV** e **60 para Varsity** no
+  desempenho esperado;
+
+- a inclinação verdadeira de `horas` é **0,10**, comum às duas equipes,
+  por construção da simulação.
+
+Usaremos esse exemplo inicialmente porque ele permite observar de forma
+simples como diferenças de habilidade não observada entre grupos podem gerar
+diferenças no desempenho esperado e afetar a relação estimada entre `horas`
+e `desempenho` quando são ignoradas.
+
+
+
+## Regressão sem controle por equipe
+
+```{r}
+# Estima a relação entre desempenho e horas sem controlar por equipe.
+modelo_sem_equipe <- lm(desempenho ~ horas, data = dados_vtreinamais)
+
+# Exibe os resultados da estimação em formato organizado.
+broom::tidy(modelo_sem_equipe)
+```
+
+A especificação `desempenho ~ horas` **omite `equipe`**. No cenário simulado,
+a Varsity possui maior **habilidade não observada**, o que desloca seu
+desempenho esperado para cima, e também treina mais horas, em média.
+
+Como `horas` está associada à variável omitida `equipe`, a regressão sem esse
+controle atribui à inclinação de `horas` parte do maior desempenho da Varsity
+decorrente de sua maior habilidade não observada.
+
+Observe na saída de `broom::tidy()` a estimativa do coeficiente de `horas`.
+Ela fica bem acima da inclinação verdadeira usada na simulação”
+
+$$
+\beta_{\text{horas}} = 0,10.
+$$
+
+
+## Interceptos específicos por equipe
+
+Agora incorporamos explicitamente as diferenças de nível entre JV e Varsity.
+
+```{r}
+# Estima um intercepto para cada equipe e uma inclinação comum.
+modelo_equipes <- lm(desempenho ~ 0 + equipe + horas, data = dados_vtreinamais)
+
+# Exibe os resultados da estimação em formato organizado.
+broom::tidy(modelo_equipes)
+```
+
+Na fórmula de `lm()`, um **intercepto geral** é incluído por padrão. O `0` em
+`0 + equipe + horas` remove esse intercepto.
+
+Com o intercepto geral removido, `equipe` entra com um indicador para cada
+nível. Assim, o R estima diretamente **um intercepto para JV e outro para
+Varsity**.
+
+O coeficiente de `horas` permanece único: sua inclinação é **comum às duas
+equipes**.
+
+
+
+## Interpretação dos interceptos específicos
+
+A especificação estimada pode ser representada por:
+
+$$
+desempenho_i = \alpha_{JV}D_{JV,i} + \alpha_{Varsity}D_{Varsity,i} + \beta_{\text{horas}}horas_i + \varepsilon_i,
+$$
+
+em que $D_{JV,i}$ indica se o atleta pertence à equipe JV e
+$D_{Varsity,i}$ indica se pertence à Varsity.
+
+Na saída de `broom::tidy(modelo_equipes)`:
+
+- `equipeJV` fornece a estimativa de $\alpha_{JV}$;
+- `equipeVarsity` fornece a estimativa de $\alpha_{Varsity}$;
+- `horas` fornece a estimativa da inclinação comum
+  $\beta_{\text{horas}}$.
+
+Os interceptos estimados ficam próximos dos **interceptos verdadeiros de
+30 para JV e 60 para Varsity**. Ao incorporar explicitamente essa diferença
+de nível entre as equipes, a inclinação estimada de `horas` volta a ficar
+próxima da inclinação verdadeira por construção:
+
+$$
+\beta_{\text{horas}} = 0,10.
+$$
+
+
+
+## Comparação das inclinações
+
+Compare as saídas de `broom::tidy()` dos dois modelos estimados.
+
+No modelo sem `equipe`, `horas` está associada à equipe, que captura a
+diferença de **habilidade não observada** entre JV e Varsity. Por isso, a
+inclinação estimada fica bem acima da inclinação verdadeira da simulação.
+
+Com interceptos específicos, o modelo incorpora a diferença de nível no
+desempenho esperado entre as equipes. A inclinação de `horas` volta a ficar
+próxima de $\beta_{\text{horas}} = 0,10$.
+
+Essa conclusão é possível porque **conhecemos o processo gerador dos dados**
+desta simulação. Em dados reais, uma mudança de coeficientes entre
+especificações não prova, sozinha, viés nem causalidade.
+
+
+
+## JV/Varsity não é um painel
+
+| Corte transversal JV/Varsity | Dados em painel |
+|---|---|
+| cada observação é um atleta | cada observação é uma combinação $(i,t)$ |
+| cada atleta aparece uma única vez | a mesma unidade $i$ aparece em vários períodos |
+| `equipe` distingue grupos | $i$ identifica a unidade |
+| não há dimensão temporal por atleta | $t$ identifica o período |
+
+O exemplo JV/Varsity tornou visível um mecanismo essencial: diferentes níveis
+de **habilidade não observada** podem gerar interceptos distintos e, quando
+também estão associados aos regressores, distorcer a relação estimada se forem
+ignorados.
+
+No exemplo, `equipe` é observada, embora a habilidade subjacente que produz
+essa diferença não precise ser diretamente observável. Em dados em painel,
+generalizamos essa intuição para a **heterogeneidade específica da unidade
+invariável no tempo**.
+
+Mas JV/Varsity é apenas uma analogia. Para trabalhar com dados em painel de
+fato, precisamos de uma base em que a mesma unidade seja observada ao longo do
+tempo.
+
+A próxima aplicação usa um painel real associado a Maia et al. (2018).
+
+
+
+## Maia et al. (2018): aplicação empírica
+
+**Problema empírico.** Em que medida tecnologias agrícolas e preservação
+ambiental podem atenuar os efeitos de eventos extremos de temperatura e
+precipitação sobre a produção agrícola?
+
+**Dados.** O estudo utiliza dados do estado de São Paulo agregados em
+**568 Minimum Comparable Areas (MCAs)** — grupos de municípios historicamente
+comparáveis — acompanhadas entre **1990 e 2014**.
+
+**Estratégia geral.** Os autores primeiro classificam as MCAs segundo duas
+dimensões: **cobertura e uso do solo** e **intensidade tecnológica da
+produção agrícola**. Três grupos de cobertura do solo e dois grupos de
+tecnologia são combinados para formar **seis grupos de localidades**.
+
+Em seguida, estimam modelos de dados em painel com **efeitos fixos**,
+separadamente para esses grupos, para analisar como eventos extremos de
+temperatura e precipitação se relacionam à produção agrícola, controlando
+também a área colhida e fatores regionais e temporais não observados.
+
+A análise considera três resultados: o **valor total da produção agrícola**
+e a **produção física de cana-de-açúcar e de laranja**, duas das principais
+atividades agrícolas do estado.
+
+**Resultado geral.** Os resultados mostram que as associações entre eventos
+climáticos extremos e produção diferem entre os grupos. Em particular, áreas
+com maior integração entre agricultura e cobertura florestal tendem a
+apresentar efeitos menos intensos dos eventos extremos, resultado que os
+autores interpretam como evidência favorável ao papel da preservação ambiental
+e dos serviços ecossistêmicos na resiliência da produção agrícola.
+
+Os próprios autores ressaltam, entretanto, que os resultados **não permitem
+estabelecer diretamente uma relação de causa e efeito**.
+
+Nesta atividade, **não reproduziremos integralmente a estratégia empírica do
+artigo**. Utilizaremos os dados de Maia et al. (2018) em uma **adaptação
+didática**, com especificações mais simples do que aquelas empregadas pelos
+autores. O objetivo é preservar um contexto empírico real e relevante, mas
+tornar mais transparentes os elementos fundamentais da econometria de dados
+em painel.
+
+Inicialmente, usaremos a base para reconhecer concretamente sua estrutura:
+**qual é a unidade observacional, qual é a dimensão temporal e como as mesmas
+unidades são acompanhadas ao longo do tempo**. Em seguida, a mesma aplicação
+servirá para introduzir e comparar procedimentos de estimação para dados em
+painel.
+
+Assim, o artigo fornece o **problema substantivo e o contexto empírico real**,
+enquanto nossa adaptação permite concentrar a atenção nos mecanismos
+econométricos que queremos compreender nesta atividade.
+
+
+
+## Dados de Maia et al. (2018)
+
+Antes de utilizar os dados para estimação, vamos examinar sua estrutura e as
+variáveis disponíveis.
+
+```{r}
+# Inspeciona a estrutura da base.
+glimpse(dados_maia2018)
+```
+
+A base contém **14.200 observações e 8 variáveis**:
+
+| Variável | Significado |
+|:---------|:------------|
+| `ano` | Ano da observação, de 1990 a 2014 |
+| `munic` | Código da unidade municipal no arquivo |
+| `vtotal` | Valor total da produção agropecuária |
+| `areatotal` | Área agrícola |
+| `tempano` | Temperatura média no ano |
+| `tempanodp` | Medida de dispersão da temperatura no ano |
+| `precano` | Precipitação total no ano |
+| `precanodp` | Medida de dispersão da precipitação no ano |
+
+O material didático disponibilizado por Alexandre Gori Maia descreve esta base
+como um **painel de municípios do estado de São Paulo** e identifica `munic`
+como o **código do município**. Já o artigo original informa que os dados
+municipais foram agregados em **568 Minimum Comparable Areas (MCAs)** para
+garantir comparabilidade espacial ao longo do período.
+
+Por isso, nesta atividade utilizaremos `munic` como o **identificador da
+unidade do painel**, preservando a nomenclatura do arquivo. Não precisamos
+identificar `munic` diretamente com uma MCA para compreender e estimar os
+modelos de dados em painel.
+
+As variáveis `tempanodp` e `precanodp` estão presentes no arquivo, mas não são
+documentadas no script que acompanha os dados. Seus nomes indicam medidas de
+dispersão das respectivas variáveis climáticas; elas não serão necessárias nas
+estimações desta atividade.
+
+A base está organizada de modo que cada linha corresponde a uma combinação
+entre uma unidade e um ano. Podemos selecionar uma dessas unidades e observar
+algumas de suas informações em anos sucessivos:
+
+```{r}
+# Parte da base completa.
+dados_maia2018 |>
+  # Mantém uma única unidade do painel.
+  filter(munic == 3500105) |>
+  # Ordena suas observações ao longo do tempo.
+  arrange(ano) |>
+  # Seleciona as variáveis que queremos observar.
+  select(munic, ano, vtotal, tempano) |>
+  # Exibe apenas os seis primeiros anos.
+  slice_head(n = 6)
+```
+
+Nesse recorte:
+
+- `munic` identifica a unidade;
+- `ano` identifica o período;
+- `vtotal` e `tempano` ilustram informações que podem variar para a mesma
+  unidade ao longo do tempo;
+- cada linha representa uma observação **unidade–tempo**, isto é, uma
+  combinação $(i,t)$.
+
+A estrutura de painel está justamente nessa repetição: **a mesma unidade $i$ é
+observada em diferentes períodos $t$**.
+
+Agora precisamos informar ao R quais variáveis identificam essas duas
+dimensões.
+
+
+
+## O pacote `plm`
+
+O `plm` é um pacote de R desenvolvido especificamente para **econometria de
+dados em painel**. Sua estrutura reúne ferramentas para trabalhar com a
+dimensão unidade–tempo e para estimar e analisar modelos de painel.
+
+Ele aparece neste ponto da atividade porque já identificamos, na base utilizada,
+as duas dimensões que estruturam o painel: **unidade** e **ano**.
+
+Neste primeiro contato com o pacote, utilizaremos três ferramentas:
+
+- `pdata.frame()` para declarar os índices de unidade e tempo;
+- `pdim()` para inspecionar as dimensões e o balanceamento do painel;
+- `index()` para recuperar os índices unidade–tempo associados às observações.
+
+
+## Estrutura de painel no `plm`
+
+Na base utilizada nesta atividade, `munic` identifica a **unidade do painel** e
+`ano` identifica o **período**. Podemos tornar essa estrutura explícita para as
+funções de painel usando `pdata.frame()`.
+
+```{r}
+# Declara quais variáveis identificam a unidade e o período.
+dados_maia2018_p <- pdata.frame(
+  dados_maia2018,
+  index = c("munic", "ano")
+)
+```
+
+Nesse comando:
+
+- `"munic"` identifica a unidade $i$;
+- `"ano"` identifica o período $t$;
+- em `index`, informamos primeiro o índice da unidade e depois o índice
+  temporal.
+
+As duas dimensões **já existem em `dados_maia2018`**. `pdata.frame()` cria uma
+representação dos dados apropriada para as funções do `plm`, associando às
+observações os índices de unidade e tempo que acabamos de declarar.
+
+
+
+## Dimensões do painel
+
+Depois de declarar os índices, podemos verificar as dimensões e o balanceamento
+do painel:
+
+```{r}
+# Verifica as dimensões e o balanceamento do painel.
+pdim(dados_maia2018_p)
+```
+
+Na saída de `pdim()`:
+
+- `n = 568`: número de **unidades**;
+- `T = 25`: número de períodos, de **1990 a 2014**;
+- `N = 14.200`: número total de observações unidade–tempo;
+- `Balanced Panel`: todas as 568 unidades são observadas nos mesmos 25 períodos.
+
+Como o painel é balanceado:
+
+$$
+568\ \text{unidades} \times 25\ \text{períodos}
+=
+14.200\ \text{observações unidade--tempo}.
+$$
+
+Além das dimensões gerais do painel, é útil verificar quantos períodos estão
+disponíveis para cada unidade.
+
+
+
+## Períodos disponíveis por unidade
+
+Para cada unidade $i$, podemos definir:
+
+$$
+T_i = \text{número de períodos observados para a unidade } i.
+$$
+
+`index()` recupera os índices unidade–tempo associados ao `pdata.frame`,
+enquanto `as_tibble()` permite trabalhar com esses índices usando as
+ferramentas do `dplyr`.
+
+```{r}
+# Extrai os índices de unidade e tempo do painel.
+indices_painel <- index(dados_maia2018_p) |>
+  as_tibble()
+
+# Calcula o número de períodos observados para cada unidade.
+periodos_por_unidade <- indices_painel |>
+  count(munic, name = "Ti")
+
+# Verifica quantas unidades possuem cada número de períodos.
+periodos_por_unidade |>
+  count(Ti, name = "n_unidades")
+```
+
+Como cada linha da base corresponde a uma combinação **unidade–ano**, contar as
+observações de cada `munic` equivale aqui a contar o número de períodos
+disponíveis para essa unidade.
+
+`Ti` não é uma variável original da base: ela foi criada para representar
+$T_i$, o número de períodos observados para cada unidade.
+
+A saída mostra **`Ti = 25` para todas as 568 unidades**, resultado consistente
+com a classificação do painel como balanceado obtida anteriormente com
+`pdim()`.
+
+Em um painel desbalanceado, o número de períodos disponíveis poderia variar
+entre as unidades. Por isso, ao inspecionar dados em painel, é importante
+verificar não apenas suas dimensões gerais, mas também **quantos períodos estão
+disponíveis para cada unidade**.
+
+
+
+## Pooled OLS como referência inicial
+
+Depois de declarar a estrutura unidade--tempo, podemos estimar um primeiro
+modelo de referência com os dados de Maia et al. (2018).
+
+Nesta aplicação didática, vamos considerar:
+
+$$
+\log(vtotal_{it}) = \beta_0 + \beta_1\log(areatotal_{it}) + \beta_2 tempano_{it} + \beta_3 precano_{it} + v_{it}
+$$
+
+Esta é uma **especificação didática simplificada**, baseada nos dados de Maia
+et al. (2018), e não uma reprodução da especificação econométrica do artigo.
+
+No artigo, os autores utilizam uma especificação mais ampla, com variáveis para
+eventos climáticos extremos e efeitos fixos regionais e temporais, estimada para
+diferentes grupos de MCAs. Aqui, começaremos deliberadamente por um modelo mais
+simples para tornar visível a passagem do *pooled OLS* para os efeitos fixos.
+
+No modelo *pooled*:
+
+- as observações unidade--tempo são reunidas em uma única regressão;
+- o intercepto e as inclinações são comuns às unidades;
+- não incorporamos ainda um componente específico para cada unidade;
+- a estimação utiliza tanto diferenças entre unidades quanto mudanças ao longo
+  do tempo.
+
+
+
+## Estimação com `plm()`
+
+A função `plm()` usa uma estrutura familiar: fórmula, dados e tipo de modelo.
+
+```{r}
+# Estima a especificação didática por pooled OLS.
+modelo_pooling <- plm(
+  log(vtotal) ~ log(areatotal) + tempano + precano,
+  data = dados_maia2018_p,
+  model = "pooling"
+)
+```
+
+Nesse comando:
+
+- a fórmula define a relação estimada;
+- `data = dados_maia2018_p` indica o painel utilizado;
+- `model = "pooling"` solicita a estimação por *pooled OLS*.
+
+Podemos verificar quantas observações foram efetivamente utilizadas:
+
+```{r}
+# Verifica o número de observações efetivamente utilizadas.
+nobs(modelo_pooling)
+```
+
+A base completa utilizada na atividade contém **14.200 observações
+unidade--tempo**, mas esta especificação utiliza **12.588 observações**, pois
+algumas linhas não possuem informação completa para todas as variáveis do
+modelo.
+
+Assim, embora a base completa constitua um painel balanceado, a **amostra
+efetivamente utilizada na estimação é desbalanceada**.
+
+Como os modelos *pooled* e FE que utilizaremos a seguir possuem a mesma fórmula
+e partem dos mesmos dados, o `plm` utiliza o mesmo conjunto de observações
+completas nos dois casos.
+
+
+
+## Interpretação do modelo pooled
+
+Podemos organizar os coeficientes estimados no mesmo padrão já utilizado:
+
+```{r}
+# Organiza os coeficientes estimados em formato tabular.
+broom::tidy(modelo_pooling)
+```
+
+A estimativa do coeficiente de `log(areatotal)` é aproximadamente **0,95**.
+
+Como `vtotal` e `areatotal` aparecem em log, esse coeficiente pode ser
+interpretado como uma **elasticidade**.
+
+Mantidas as demais variáveis do modelo constantes, um aumento de 1% em
+`areatotal` está associado a aproximadamente **0,95% de aumento em `vtotal`**.
+
+Essa é uma interpretação de **associação condicional**, não de efeito causal.
+
+Neste momento, o foco está na estimação e na interpretação dos coeficientes.
+A inferência apropriada para dados em painel será discutida posteriormente.
+
+
+
+## Limite do pooling
+
+O modelo *pooled* pode ser representado, de forma esquemática, por:
+
+$$
+y_{it} = \beta_0 + \beta x_{it} + v_{it}.
+$$
+
+Entretanto, suponha que exista uma heterogeneidade específica de cada unidade,
+invariável ao longo do tempo:
+
+$$
+y_{it} = \beta_0 + \beta x_{it} + u_i + e_{it}.
+$$
+
+Podemos escrever o mesmo modelo como
+
+$$
+y_{it} = \alpha_i + \beta x_{it} + e_{it},
+\qquad
+\alpha_i=\beta_0+u_i.
+$$
+
+Se o modelo *pooled* ignora $u_i$, esse componente passa a fazer parte do
+erro composto:
+
+$$
+v_{it}=u_i+e_{it}.
+$$
+
+O problema surge quando $u_i$ está associado a algum dos regressores.
+Nesse caso, o erro composto $v_{it}$ também estará associado a esse regressor,
+violando uma condição necessária para a consistência do *pooled OLS*.
+
+Assim, o *pooled OLS* pode atribuir aos regressores parte da associação que, na
+verdade, decorre de diferenças não observadas e invariáveis no tempo entre as
+unidades.
+
+Esse é o mesmo mecanismo econométrico visto no exemplo JV/Varsity, agora em um
+painel real.
+
+
+
+## Efeitos fixos individuais controlam componentes invariáveis no tempo
+
+Neste contexto, $u_i$ representa a **heterogeneidade específica da unidade
+invariável no tempo**. De forma equivalente, $\alpha_i = \beta_0 + u_i$ é o
+intercepto específico da unidade.
+
+Essas diferenças podem refletir características regionais persistentes que não
+foram explicitamente incluídas na especificação.
+
+A transformação *within* elimina $\alpha_i$ e, portanto, elimina também
+$u_i$ da equação utilizada para estimar as inclinações.
+
+Características que mudam ao longo do tempo, entretanto, não são
+automaticamente controladas pelos efeitos fixos individuais.
+
+A próxima pergunta econométrica é, portanto: como estimar $\beta$ eliminando
+essa heterogeneidade individual invariável no tempo?
+
+
+
+## Efeitos fixos individuais com `plm()`
+
+Para controlar a heterogeneidade individual invariável no tempo, estimamos a
+mesma especificação didática pelo estimador *within*.
+
+A função `plm()` utiliza alguns argumentos centrais para definir a estimação.
+Para um modelo de efeitos fixos, podemos representar sua sintaxe essencial por:
+
+```r
+# Sintaxe essencial para um modelo de efeitos fixos com plm().
+plm(
+  formula,
+  data,
+  model = "within",
+  effect = "individual"
+)
+```
+
+Nessa estrutura:
+
+- `formula` especifica a variável dependente e as regressoras;
+- `data` informa os dados utilizados na estimação;
+- `model = "within"` seleciona o estimador *within*;
+- `effect` indica a dimensão dos efeitos fixos: `"individual"` para efeitos
+  de unidade, `"time"` para efeitos de tempo e `"twoways"` para efeitos nas
+  duas dimensões.
+
+Como `dados_maia2018_p` já foi criado como um `pdata.frame` com os índices
+`munic` e `ano`, não precisamos declará-los novamente na estimação.
+
+Aplicando essa estrutura à nossa especificação:
+
+```{r}
+# Estima o modelo de efeitos fixos individuais.
+modelo_fe <- plm(
+  log(vtotal) ~ log(areatotal) + tempano + precano,
+  data = dados_maia2018_p,
+  model = "within",
+  effect = "individual"
+)
+```
+
+Nesse comando:
+
+- `model = "within"` solicita o estimador *within*;
+- `effect = "individual"` indica que os efeitos são específicos das
+  **unidades**;
+- a fórmula e as regressoras são as mesmas utilizadas no modelo *pooled*.
+
+O estimador utiliza desvios em relação às médias de cada unidade e, assim,
+elimina da equação o componente individual $\alpha_i$ que permanece invariável
+no tempo.
+
+**Atenção à notação:** a saída de `pdim()` usa `n` para o número de unidades
+e `N` para o número total de observações. Na notação econométrica adotada
+na aula, usamos $N$ para o número de unidades.
+
+Assim, na notação da aula, este painel possui
+
+$$
+N=568,\qquad T=25,\qquad NT=14.200.
+$$
+
+Na saída de `summary()`, essa especificação aparecerá como
+
+`Oneway (individual) effect Within Model`.
+
+`Oneway (individual)` indica efeitos fixos em **uma dimensão** — as unidades —,
+enquanto `Within Model` identifica o estimador *within* utilizado.
+
+Neste ponto estamos introduzindo apenas os **efeitos fixos individuais**. A
+especificação de Maia et al. (2018) também controla fatores temporais por
+efeitos fixos; essa segunda dimensão será incorporada posteriormente na
+atividade.
+
+
+
+## Saída do modelo de efeitos fixos
+
+A função `summary()` permite examinar a estrutura da amostra efetivamente
+utilizada e os resultados da estimação:
+
+```{r}
+# Exibe a estrutura da amostra e os resultados do modelo de efeitos fixos.
+summary(modelo_fe)
+```
+
+Antes de interpretar os coeficientes, vamos observar a amostra utilizada pelo
+modelo e a fonte de variação explorada pelo estimador *within*.
+
+
+
+## Amostra efetiva e variação *within*
+
+O painel da base completa é balanceado, mas a eliminação de observações
+incompletas altera a amostra de estimação.
+
+A saída de `summary(modelo_fe)` informa:
+
+`Unbalanced Panel: n = 549, T = 1-25, N = 12588`
+
+Das **568 unidades da base completa**, **549** permanecem na amostra de
+estimação, com **1 a 25 períodos** completos e **12.588 observações
+unidade--tempo**.
+
+O mínimo $T_{\min}=1$ indica que existe pelo menos uma unidade com apenas uma
+observação completa, mas não informa quantas. Podemos reaplicar a rotina já
+utilizada anteriormente, agora à **amostra efetivamente utilizada pelo
+modelo**:
+
+```{r}
+# Extrai os índices das observações efetivamente usadas pelo modelo.
+indices_fe <- index(modelo_fe) |>
+  as_tibble()
+
+# Calcula o número de períodos disponíveis para cada unidade na amostra de estimação.
+periodos_por_unidade_fe <- indices_fe |>
+  count(munic, name = "Ti")
+
+# Identifica as unidades com apenas um período disponível.
+periodos_por_unidade_fe |>
+  filter(Ti == 1)
+```
+
+A inspeção identifica **7 unidades com apenas uma observação completa**
+($T_i=1$).
+
+Para uma unidade observada apenas uma vez, não existe variação ao longo do
+tempo. Após a transformação *within*,
+
+$$
+x_{it}-\bar{x}_i=0
+\qquad\text{e}\qquad
+y_{it}-\bar{y}_i=0.
+$$
+
+Essas 7 unidades continuam aparecendo nas dimensões da amostra reportadas pelo
+`plm`, mas suas observações transformadas não contribuem para a estimação das
+inclinações do modelo de efeitos fixos individuais.
+
+Mais geralmente, ter $T_i>1$ torna possível observar variação temporal, mas
+não garante que todas as regressoras variem dentro de uma unidade. Para uma
+regressora contribuir para a estimação de sua inclinação pelo estimador
+*within*, ela precisa apresentar **variação dentro das unidades** em parte da
+amostra.
+
+**Boa prática:** depois de estimar um modelo de painel, examine a **amostra
+efetivamente utilizada**, e não apenas a estrutura da base completa.
+
+
+
+## Interpretação do coeficiente *within*
+
+Para `log(areatotal)`, obtemos $\hat\beta_1 \approx 0,934$.
+
+Como `vtotal` e `areatotal` aparecem em log, o coeficiente pode ser interpretado
+como uma **elasticidade**.
+
+Mantidas `tempano` e `precano` constantes, uma variação de 1% em `areatotal`
+dentro de uma mesma unidade está associada a uma variação de aproximadamente
+**0,934% em `vtotal`**.
+
+A diferença em relação ao modelo *pooled* é importante: essa estimativa utiliza
+a **variação de `log(areatotal)` dentro das unidades ao longo do tempo**, depois
+de eliminados os componentes específicos das unidades que permanecem
+invariáveis no tempo.
+
+A interpretação continua sendo de **associação condicional**, não de efeito
+causal.
+
+**Atenção:** os erros-padrão, testes $t$ e valores-p exibidos por `summary()`
+são os convencionais. A inferência apropriada para dados em painel será
+discutida posteriormente.
+
+O `F-statistic` mostrado ao final dessa saída testa conjuntamente os
+coeficientes das regressoras; **não é o teste $F$ dos efeitos individuais**,
+que faremos adiante com `pFtest()`.
+
+
+
+## *Pooled OLS* versus efeitos fixos
+
+Os dois modelos utilizam a mesma especificação e a mesma amostra efetiva, mas
+exploram a variação dos dados de maneira diferente.
+
+Podemos comparar diretamente os coeficientes estimados:
+
+```{r}
+# Mostra os coeficientes estimados pelo pooled OLS.
+broom::tidy(modelo_pooling) |>
+  select(term, estimate)
+
+# Mostra os coeficientes estimados pelo modelo de efeitos fixos.
+broom::tidy(modelo_fe) |>
+  select(term, estimate)
+```
+
+No *pooled OLS*, a estimação utiliza a **variação global das observações**,
+que combina diferenças entre unidades e mudanças dentro das unidades ao longo
+do tempo, sem eliminar a heterogeneidade individual invariável.
+
+No modelo de efeitos fixos individuais, a transformação *within* elimina os
+componentes específicos das unidades que permanecem invariáveis no tempo. As
+inclinações são, portanto, estimadas a partir da **variação dentro das unidades
+ao longo do tempo**.
+
+Observe também que o modelo *pooled* apresenta um intercepto comum, enquanto o
+intercepto não aparece entre os coeficientes do modelo *within*: a
+transformação elimina os componentes que são constantes dentro de cada unidade.
+
+Os resultados mostram respostas bastante diferentes à mudança de
+especificação:
+
+- `log(areatotal)`: $0,952 \rightarrow 0,934$;
+- `tempano`: $-0,0159 \rightarrow 0,189$;
+- `precano`: $0,0000408 \rightarrow -0,0000632$.
+
+A estimativa de `log(areatotal)` muda relativamente pouco. Em contraste, as
+estimativas das duas variáveis climáticas mudam de sinal, e a mudança de
+`tempano` também é expressiva em magnitude.
+
+Essas diferenças ilustram que controlar a heterogeneidade individual
+invariável no tempo pode alterar de maneira importante as associações
+estimadas quando essa heterogeneidade está relacionada às regressoras.
+
+Entretanto, **a simples mudança dos coeficientes não demonstra que o pooled
+OLS seja viesado**, nem permite concluir que as estimativas de efeitos fixos
+tenham interpretação causal. Para isso, seriam necessárias as hipóteses
+econométricas apropriadas.
+
+
+
+## Teste $F$ conjunto dos efeitos individuais
+
+Até aqui, vimos que o *pooled OLS* impõe um intercepto comum às unidades,
+enquanto o modelo de efeitos fixos individuais permite heterogeneidade
+invariável no tempo entre elas.
+
+Podemos testar conjuntamente a restrição de que esses interceptos sejam
+iguais:
+
+$$
+H_0:\alpha_1=\alpha_2=\cdots=\alpha_N
+\qquad\text{vs.}\qquad
+H_1:\text{pelo menos um }\alpha_i\text{ difere dos demais}.
+$$
+
+Sob $H_0$, um único intercepto comum é suficiente para representar as unidades.
+Assim:
+
+- **modelo restrito:** *pooled OLS*, com intercepto comum;
+- **modelo irrestrito:** efeitos fixos individuais, equivalente a permitir
+  interceptos específicos para as unidades.
+
+```{r}
+# Compara pooled OLS e efeitos fixos pelo teste F conjunto.
+plm::pFtest(modelo_fe, modelo_pooling)
+```
+
+Nesta aplicação, obtemos $F = 19,477$ e $p < 2,2\times10^{-16}$.
+
+O resultado fornece **forte evidência contra $H_0$**: os dados não sustentam a
+restrição de que todas as unidades compartilhem o mesmo intercepto.
+
+Portanto, nesta aplicação, há evidência de **efeitos individuais
+conjuntamente relevantes** em relação ao modelo *pooled* com intercepto comum.
+
+O teste responde, porém, a uma pergunta específica. Ele **não testa se os
+efeitos individuais estão correlacionados com as regressoras**, não compara
+efeitos fixos com efeitos aleatórios e não estabelece interpretação causal.
+Por isso, não deve ser usado como uma regra mecânica de escolha de modelos.
+
+**Inferência:** `pFtest()` utiliza aqui a referência clássica do teste $F$.
+A inferência robusta à heterocedasticidade e à dependência serial dentro das
+unidades será discutida posteriormente.
+
+
+
+## Efeitos fixos em duas dimensões
+
+O modelo estimado até aqui controla a **heterogeneidade específica das unidades
+invariável no tempo**, representada por $\alpha_i$.
+
+Mas também podem existir fatores específicos de cada ano que afetam as unidades
+de maneira comum.
+
+Isso é relevante nesta aplicação: o painel acompanha as unidades entre **1990
+e 2014**, de modo que condições próprias de determinado ano podem produzir
+mudanças comuns a muitas unidades.
+
+No artigo original, Maia et al. (2018) controlam fatores **regionais** $r_i$ e
+**temporais** $c_t$ por meio de efeitos fixos.
+
+Nossa especificação continua sendo uma **adaptação didática simplificada**:
+as variáveis explicativas e a forma de estimação não reproduzem integralmente
+o modelo do artigo. A inclusão dos efeitos de tempo aproxima apenas a
+**estrutura dos efeitos fixos** daquela utilizada pelos autores.
+
+Na nossa especificação, podemos representar as duas dimensões por
+
+$$
+\log(vtotal_{it}) = \alpha_i + \lambda_t + \beta_1\log(areatotal_{it}) 
++ \beta_2 tempano_{it} + \beta_3 precano_{it} + e_{it}
+$$
+
+- $\alpha_i$: heterogeneidade específica das **unidades** e invariável no tempo;
+- $\lambda_t$: fatores específicos dos **anos** e comuns às unidades.
+
+Os efeitos de tempo controlam, portanto, componentes que variam entre os anos,
+mas atingem conjuntamente as unidades. Eles não controlam automaticamente
+fatores que variam de maneira distinta entre unidades ao longo do tempo.
+
+No `plm`, mantemos o estimador *within* e acrescentamos a segunda dimensão dos
+efeitos fixos:
+
+```{r}
+# Estima efeitos fixos nas dimensões unidade e tempo.
+modelo_fe_tw <- plm(
+  log(vtotal) ~ log(areatotal) + tempano + precano,
+  data = dados_maia2018_p,
+  model = "within",
+  effect = "twoways"
+)
+```
+
+Nesse comando:
+
+- `model = "within"` solicita o estimador *within*;
+- `effect = "twoways"` incorpora efeitos fixos de **unidade e tempo**.
+
+
+
+## Saída do modelo de efeitos fixos em duas dimensões
+
+Podemos examinar a nova estimação com `summary()`:
+
+```{r}
+# Exibe a estrutura da amostra e os resultados do modelo em duas dimensões.
+summary(modelo_fe_tw)
+```
+
+A saída identifica a especificação como
+
+`Twoways effects Within Model`.
+
+A amostra efetivamente utilizada permanece a mesma do modelo de efeitos fixos
+individuais:
+
+`Unbalanced Panel: n = 549, T = 1-25, N = 12588`
+
+Como a amostra efetiva é exatamente a mesma nos dois modelos, eventuais
+diferenças entre os coeficientes estimados não decorrem de uma mudança na
+composição da amostra.
+
+O que muda é a heterogeneidade eliminada pela transformação: agora controlamos
+tanto os efeitos específicos das unidades quanto os efeitos específicos dos
+anos.
+
+Como anteriormente, os erros-padrão, testes $t$ e valores-$p$ apresentados por
+`summary()` são os convencionais. A inferência apropriada para dados em painel
+será tratada posteriormente.
+
+
+
+## Efeitos fixos individuais versus efeitos fixos em duas dimensões
+
+Podemos comparar diretamente os coeficientes estimados pelos dois modelos:
+
+```{r}
+# Mostra os coeficientes do modelo com efeitos fixos individuais.
+broom::tidy(modelo_fe) |>
+  select(term, estimate)
+
+# Mostra os coeficientes do modelo com efeitos fixos de unidade e tempo.
+broom::tidy(modelo_fe_tw) |>
+  select(term, estimate)
+```
+
+As estimativas mudam da seguinte forma:
+
+- `log(areatotal)`: $0,93367 \rightarrow 0,86365$;
+- `tempano`: $0,18908 \rightarrow 0,00611$;
+- `precano`: $-0,00006 \rightarrow 0,00003$.
+
+Para `log(areatotal)`, a elasticidade estimada passa de aproximadamente
+$0,934$ para $0,864$.
+
+Assim, no modelo em duas dimensões, um aumento de 1% em `areatotal`
+dentro de uma mesma unidade, descontados os movimentos comuns aos anos e
+mantidas as demais regressoras constantes, está associado a um aumento de
+aproximadamente **0,864% em `vtotal`**.
+
+As variáveis climáticas são mais sensíveis à inclusão dos efeitos de tempo.
+A estimativa de `tempano` cai de aproximadamente $0,189$ para $0,006$, enquanto
+a estimativa de `precano` muda de sinal.
+
+Essas mudanças mostram que as associações estimadas são **sensíveis ao
+controle dos componentes temporais comuns às unidades**.
+
+Isso não significa, porém, que a mudança dos coeficientes demonstre viés no
+modelo anterior ou que o modelo em duas dimensões tenha interpretação causal.
+
+A saída de `summary()` também informa aproximadamente:
+
+$$
+\bar R^2_{\text{one-way}} = 0,420
+\qquad\text{e}\qquad
+\bar R^2_{\text{two-way}} = 0,496.
+$$
+
+No `plm`, esses valores são calculados sobre os dados transformados utilizados
+em cada estimação. Como os modelos *one-way* e *two-way* utilizam
+transformações diferentes, seus $R^2$ *within* podem ser apresentados e
+comparados descritivamente.
+
+Para reunir os resultados dos dois modelos em uma única tabela, podemos utilizar
+o pacote `modelsummary`. Além das estimativas dos coeficientes, apresentaremos
+uma medida da incerteza associada a essas estimativas.
+
+Nesta aplicação, utilizaremos **erros-padrão robustos agrupados por unidade**,
+que permitem heterocedasticidade e correlação serial dentro das unidades, e
+**intervalos de confiança de 95%**. O tratamento sistemático da inferência para
+dados em painel será realizado posteriormente na disciplina.
+
+```{r}
+# Reúne os modelos que serão apresentados lado a lado.
+modelos_fe <- list(
+  "FE individual" = modelo_fe,
+  "FE unidade + ano" = modelo_fe_tw
+)
+
+# Define uma função para calcular a matriz de variância-covariância
+# robusta e agrupada pela unidade do painel.
+vcov_unidade <- function(modelo) {
+
+# Calcula a matriz robusta com agrupamento por unidade.
+# "arellano" refere-se aqui ao estimador de covariância de Arellano (1987),
+# e não ao estimador Arellano-Bond para painéis dinâmicos.
+plm::vcovHC(
+  modelo,
+  method = "arellano",
+  type = "HC1",
+  cluster = "group"
+)
+
+}
+
+# Define as estatísticas de ajuste que serão mantidas na tabela.
+gof_fe <- tibble::tribble(
+  ~raw,            ~clean,        ~fmt,
+  "nobs",          "Observações",    0,
+  "adj.r.squared", "R² ajustado",    3
+)
+
+# Apresenta os dois modelos com estimativas, erros-padrão e IC de 95%.
+modelsummary::modelsummary(
+  modelos_fe,
+  vcov = vcov_unidade,
+  estimate = "{estimate}",
+  statistic = c(
+    "EP agrupado = {std.error}",
+    "IC 95% = [{conf.low}, {conf.high}]"
+  ),
+  conf_level = 0.95,
+  stars = FALSE,
+  fmt = modelsummary::fmt_significant(3),
+  gof_map = gof_fe
+)
+```
+
+A matriz de variância-covariância utilizada para construir os erros-padrão e os
+intervalos de confiança é, portanto, diferente da matriz convencional usada nas
+saídas de `summary()` examinadas anteriormente.
+
+A escolha da matriz de variância-covariância depende da estrutura de dependência
+dos erros. O agrupamento por unidade utilizado aqui é uma referência inicial;
+outras formas de heterocedasticidade, dependência serial e dependência
+transversal serão estudadas posteriormente.
+
+
+## O pacote `fixest`
+
+Como vimos nos slides da aula 1, o pacote `fixest` oferece outra implementação 
+para a estimação de modelos com efeitos fixos. Para modelos lineares, uma de 
+suas principais funções é `feols()`.
+
+Uma característica importante de sua sintaxe é que os efeitos fixos podem ser
+especificados diretamente na fórmula, depois do símbolo `|`:
+
+```r
+# Sintaxe básica de um modelo linear com efeitos fixos.
+fixest::feols(
+  y ~ x1 + x2 | unidade + tempo,
+  data = dados
+)
+```
+
+Nessa estrutura:
+
+- antes de `|`, especificamos a variável dependente e as regressoras;
+- depois de `|`, indicamos as dimensões dos efeitos fixos;
+- uma única variável após `|` representa efeitos fixos em uma dimensão;
+- duas variáveis separadas por `+` representam efeitos fixos em duas dimensões.
+
+Assim, `plm` e `fixest` podem ser utilizados para estimar o mesmo modelo
+econométrico, embora utilizem interfaces computacionais diferentes.
+
+
+
+### Exercício
+
+Utilizando `fixest::feols()` e a base `dados_maia2018`, estime novamente:
+
+1. o modelo com **efeitos fixos de unidade**;
+2. o modelo com **efeitos fixos de unidade e ano**.
+
+Em ambos os casos, utilize a mesma variável dependente e as mesmas regressoras
+dos modelos estimados anteriormente com `plm`.
+
+Salve cada estimação em um objeto diferente. Você pode utilizar, por exemplo,
+os nomes:
+
+- `modelo_fe_fixest` para o modelo com efeitos fixos de unidade;
+- `modelo_fe_tw_fixest` para o modelo com efeitos fixos de unidade e ano.
+
+O pacote `fixest` também fornece a função `etable()`, que permite organizar os
+resultados de uma ou mais estimações em uma tabela. Depois de estimar os dois
+modelos, apresente-os lado a lado com:
+
+```r
+# Exibe os resultados dos dois modelos em uma única tabela.
+fixest::etable(
+  modelo_fe_fixest,
+  modelo_fe_tw_fixest
+)
+```
+
+Utilizando essa tabela, compare os coeficientes estimados para:
+
+- `log(areatotal)`;
+- `tempano`;
+- `precano`.
+
+Os coeficientes obtidos com `fixest` são iguais aos obtidos anteriormente com
+`plm`, salvo eventuais diferenças numéricas desprezíveis?
+
+Neste exercício, concentre a comparação **nos coeficientes estimados**. Não
+compare erros-padrão, valores-$p$, número de observações ou outras estatísticas
+apresentadas pelas funções.
+
+
+
+## Referências 
+
+Maia, A. G., Miyamoto, B. C. B., & Garcia, J. R. (2018). Climate change and agriculture: do environmental preservation and ecosystem services matter? *Ecological Economics*, 152, 27–39. <https://doi.org/10.1016/j.ecolecon.2018.05.013>

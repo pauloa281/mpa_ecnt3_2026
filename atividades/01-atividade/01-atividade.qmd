@@ -1,7 +1,7 @@
 ---
 title: "Econometria III <br> Atividade 1"
 subtitle: "Introdução ao Modelo de Efeitos Fixos em R"
-author: "SEU NOME"
+author: "Paulo Aragão Daldegan"
 lang: pt-BR
 format:
   html:
@@ -25,10 +25,11 @@ library(tidyverse)
 library(plm)
 library(modelsummary)
 library(fixest)
+library(readr)
 
 # Define o caminho relativo dos arquivos de dados.
-path_vtreinamais <- "dados/brutos/equipes-varsity-treina-mais.csv"
-path_maia2018 <- "dados/brutos/Data_AgricultureClimate.csv"
+path_vtreinamais <- here::here("dados/brutos/equipes-varsity-treina-mais.csv")
+path_maia2018 <- here::here("dados/brutos/Data_AgricultureClimate.csv")
 
 # Importa os arquivos usando o caminho relativo.
 dados_vtreinamais <- read_csv(path_vtreinamais)
@@ -1181,7 +1182,34 @@ Neste exercício, concentre a comparação **nos coeficientes estimados**. Não
 compare erros-padrão, valores-$p$, número de observações ou outras estatísticas
 apresentadas pelas funções.
 
+### Resolução
 
+```{r}
+
+# Modelo com efeitos fixos de unidade
+
+modelo_fe_fixest <- fixest::feols(
+  log(vtotal) ~ log(areatotal) + tempano + precano | munic,
+  data = dados_maia2018
+)
+
+# Modelo com efeitos fixos de unidade e ano
+
+modelo_fe_tw_fixest <- fixest::feols(
+  log(vtotal) ~ log(areatotal) + tempano + precano | munic + ano,
+  data = dados_maia2018
+)
+
+# Exibe os resultados dos dois modelos em uma única tabela.
+
+fixest::etable(
+  modelo_fe_fixest,
+  modelo_fe_tw_fixest
+)
+
+```
+
+Podemos observar que os coeficientes betas dos dois modelos (com efeito fixo de unidade e efeito fixo de unidade e ano) tiveram boas diferenças. Os coeficientes de `areatotal` e `tempano` diminuiram com o controle sendo feito por unidade e ano, além de `precano` mudar o sinal e passar a ter uma relação positiva. Comparando os resultados obtidos com `fixest` com `plm`, são praticamente os mesmos para os valores betas, tendo somente pequenas diferenças numéricas.
 
 ## Referências 
 

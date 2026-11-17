@@ -1,0 +1,953 @@
+---
+title: "Econometria III <br> Atividade 4"
+subtitle: "Estimação do CCAPM por GMM em R: estudo guiado"
+author: "Prof. Dr. Washington S. da Silva"
+lang: pt-BR
+format:
+  html:
+    toc: true
+    embed-resources: true
+execute:
+  echo: true
+  warning: false
+  message: false
+---
+
+```{r}
+#| label: setup
+#| include: false
+
+# Define a precisão de impressão e evita notação científica nos resultados.
+options(digits = 5, scipen = 999)
+
+# Carrega os pacotes de leitura e manipulação de dados.
+library(readr)
+library(dplyr)
+```
+
+## Objetivos da atividade
+
+Nesta atividade, vamos acompanhar como um problema econômico fornece
+condições de momento e como o GMM utiliza essas condições para estimar
+parâmetros. O exemplo é o **modelo de precificação de ativos baseado no
+consumo (CCAPM)**, apresentado na Aula 4.
+
+Ao longo do roteiro, estudaremos:
+
+1. a escolha entre consumir hoje e investir para consumir no futuro;
+2. o papel das preferências nessa escolha e a origem da condição de Euler;
+3. a construção de cinco condições de momento com dados de consumo e retornos;
+4. a estimação de dois parâmetros por GMM em dois passos;
+5. a interpretação das estimativas, dos erros-padrão e do teste J.
+
+Este é um **roteiro de estudo guiado**: basta renderizar o arquivo Quarto
+para HTML e acompanhar as explicações, o código R e os resultados. Os pacotes
+`readr`, `dplyr` e `knitr` devem estar disponíveis. Todo o código necessário
+está neste arquivo; não é preciso um script auxiliar. Mantenha os caminhos
+relativos para os dados locais e os arquivos bibliográficos usados na renderização.
+
+## CCAPM: origem e problema econômico
+
+A sigla **CCAPM** vem de *Consumption-Based Capital Asset Pricing Model*.
+O modelo relaciona os preços e retornos dos ativos às **preferências dos
+consumidores** e ao **comportamento do consumo ao longo do tempo**.
+
+Um investimento é valioso porque permite transferir recursos para o futuro,
+quando poderão financiar consumo. Para avaliar esse investimento, portanto,
+o consumidor considera quanto poderá consumir, quando receberá os recursos e
+em quais situações da economia eles estarão disponíveis.
+
+Essa última dimensão é importante porque o futuro é incerto. Um ativo que
+proporciona recursos justamente quando o consumo está baixo pode ser
+especialmente útil: ajuda a sustentar o consumo em uma situação desfavorável.
+Um ativo que paga bem apenas quando o consumo já está elevado oferece um
+benefício diferente. Assim, ativos com o mesmo retorno médio podem ter
+valores distintos para o consumidor, dependendo de **como seus retornos
+acompanham o consumo**.
+
+@lucas1978 é uma referência central para a análise de preços de ativos em
+uma economia na qual as decisões de consumo e investimento são determinadas
+em equilíbrio. @hansenSingleton1982 desenvolveram uma estratégia de estimação
+e teste de modelos desse tipo a partir das restrições implicadas pelas
+escolhas ótimas dos agentes.
+
+Nesta aplicação, seguimos o exemplo empírico de @sargentStachurski2026:
+utilizamos uma série de retornos de mercado e uma série de crescimento do
+consumo para estimar dois parâmetros de preferências. Antes de trabalhar
+com os dados, precisamos entender a restrição econômica que será estimada.
+
+## Escolha intertemporal, utilidade e condição de Euler
+
+### Consumo presente e investimento
+
+Imagine um consumidor que dispõe de recursos para consumir e investir.
+Consumir uma unidade monetária adicional hoje traz satisfação imediata.
+Investir essa unidade reduz o consumo presente, mas permite financiar consumo
+no período seguinte. O retorno do investimento, entretanto, é incerto.
+
+A **otimização intertemporal** consiste em escolher uma alocação viável dos
+recursos que maximize a satisfação esperada ao longo dos períodos. O
+consumidor não procura apenas elevar o consumo de hoje ou o de amanhã
+isoladamente: compara os benefícios e custos de distribuir seu consumo
+no tempo, respeitando os recursos disponíveis.
+
+Chamamos de **utilidade** a representação da satisfação proporcionada pelo
+consumo. A função $u(C_t)$ associa ao consumo real por pessoa $C_t$ uma medida
+dessa satisfação no período $t$. O consumidor compara a utilidade do consumo
+presente com a utilidade esperada do consumo futuro, $C_{t+1}$.
+
+O parâmetro $\beta$ é o **fator de desconto intertemporal**, que pondera a
+utilidade futura nessa comparação. Na formulação usual, $0<\beta<1$:
+quanto maior $\beta$, maior o peso atribuído ao consumo futuro em relação
+ao presente.
+
+A notação $E_t[\cdot]$ significa **expectativa condicionada às informações
+conhecidas em $t$**. Ao decidir quanto investir, o consumidor conhece sua
+situação presente e as informações já disponíveis, mas não os retornos e o
+consumo que efetivamente ocorrerão em $t+1$.
+
+### Utilidade marginal e aversão ao risco
+
+A **utilidade marginal**, $u'(C)$, mede o ganho de utilidade decorrente de
+um pequeno acréscimo no consumo. Vamos supor que consumir mais aumenta a
+utilidade, mas que o ganho de uma unidade adicional diminui quando o consumo
+já é alto. Assim, uma unidade extra de consumo tem maior valor para quem está
+em uma situação de consumo baixo.
+
+Uma forma de representar essas preferências é a função de utilidade
+**CRRA**, sigla para *Constant Relative Risk Aversion*, ou aversão relativa
+ao risco constante:
+
+$$
+u(C)=\frac{C^{1-\gamma}}{1-\gamma},
+\qquad C>0,\quad \gamma>0,\quad \gamma\neq1.
+$$
+
+O parâmetro $\gamma$ mede a **aversão relativa ao risco**. Ela é relativa
+porque considera o risco em proporção ao nível de consumo, e constante porque
+o coeficiente não depende desse nível. Valores maiores de $\gamma$ indicam
+maior aversão a riscos proporcionais sobre o consumo.
+
+A utilidade marginal dessa função é:
+
+$$
+u'(C)=C^{-\gamma}.
+$$
+
+Esse resultado vem da derivada da potência: ao derivar $C^{1-\gamma}$,
+o fator $1-\gamma$ cancela o denominador e o expoente diminui em uma unidade.
+Quando $\gamma=1$, utilizamos $u(C)=\log(C)$, cuja derivada é $1/C$; a mesma
+expressão $u'(C)=C^{-\gamma}$ continua válida.
+
+Para $\gamma>0$, a utilidade marginal diminui quando o consumo cresce.
+Além disso, quanto maior $\gamma$, mais intensamente a utilidade marginal
+responde a uma variação proporcional do consumo. Isso ajuda a entender por
+que receber recursos em situações de consumo baixo pode ser tão valioso.
+
+### Custo e benefício marginais do investimento
+
+Vamos explicitar a escolha com um **exemplo simplificado de dois períodos**.
+O consumidor decide quanto investir hoje e consome, no período seguinte,
+os recursos que estiverem disponíveis. Trata-se de uma representação
+didática para compreender a condição de otimalidade; a aplicação ao CCAPM
+utiliza essa mesma lógica marginal, sem que precisemos desenvolver aqui
+um modelo completo de equilíbrio geral.
+
+Os elementos do exemplo são:
+
+- $W_t$: recursos disponíveis no presente, conhecidos pelo consumidor;
+- $a_t$: montante investido no ativo, que é a **variável de decisão**;
+- $Y_{t+1}$: recursos futuros provenientes de outras fontes, como renda do
+  trabalho, que também podem ser incertos;
+- $R_{t+1}$: retorno bruto real e incerto do ativo;
+- $C_t$ e $C_{t+1}$: consumo presente e futuro, respectivamente.
+
+Os recursos e o consumo são medidos em termos reais e por pessoa.
+O consumidor escolhe $a_t$ sem alterar o retorno oferecido pelo ativo ou os
+recursos $Y_{t+1}$. O retorno bruto real indica quanto consumo futuro pode
+ser financiado por unidade investida:
+
+$$
+R_{t+1}=1+r_{t+1},
+$$
+
+em que $r_{t+1}$ é o retorno líquido real. Se $R_{t+1}=1{,}02$, uma unidade
+investida financia 1,02 unidades de consumo no período seguinte: o retorno
+líquido real é 2%.
+
+O consumidor escolhe o investimento que maximiza a soma da utilidade
+presente com a utilidade futura esperada e descontada:
+
+$$
+\max_{a_t}\; u(C_t)+\beta E_t[u(C_{t+1})],
+$$
+
+sujeita às restrições orçamentárias:
+
+$$
+\begin{aligned}
+C_t&=W_t-a_t,\\
+C_{t+1}&=Y_{t+1}+R_{t+1}a_t.
+\end{aligned}
+$$
+
+A primeira restrição diz que investir reduz os recursos disponíveis para
+consumir hoje. A segunda diz que o consumo futuro é financiado pelos demais
+recursos e pelo resultado do investimento. As escolhas consideradas devem
+manter o consumo positivo nos dois períodos.
+
+Essas restrições mostram o efeito de um pequeno aumento no investimento:
+se $a_t$ aumenta em $\Delta a$, o consumo presente diminui em $\Delta a$ e
+o futuro aumenta em $R_{t+1}\Delta a$. O segundo efeito depende do retorno
+que vier a ocorrer. Por unidade adicional investida, comparamos:
+
+- **Custo marginal presente:** a perda de utilidade é $u'(C_t)$, pois o
+  consumo atual diminui em uma unidade.
+- **Benefício marginal futuro:** o ganho de utilidade é
+  $R_{t+1}u'(C_{t+1})$, pois o consumo futuro aumenta em $R_{t+1}$ unidades.
+  Na decisão de hoje, utilizamos a expectativa desse ganho, ponderada por
+  $\beta$.
+
+Em uma solução ótima **interior**, na qual o consumidor pode aumentar ou
+reduzir marginalmente o investimento, uma pequena alteração em $a_t$ não
+deve proporcionar ganho de utilidade esperada. Considerando os dois efeitos
+das restrições orçamentárias, a condição de primeira ordem em relação a
+$a_t$ é:
+
+$$
+-u'(C_t)+\beta E_t[R_{t+1}u'(C_{t+1})]=0.
+$$
+
+O sinal negativo representa a perda de utilidade presente. O termo positivo
+representa o ganho futuro esperado e descontado. Reorganizando:
+
+$$
+\boxed{
+u'(C_t)=\beta E_t[R_{t+1}u'(C_{t+1})].
+}
+$$
+
+**Esta é a equação de Euler do problema de escolha intertemporal.**
+Ela decorre da maximização da utilidade esperada e é uma **condição
+necessária para uma solução ótima interior**: o custo marginal presente
+deve igualar o benefício marginal futuro esperado e descontado.
+
+Se o benefício fosse maior que o custo, o consumidor poderia elevar sua
+utilidade investindo um pouco mais e consumindo menos hoje. Se fosse menor,
+poderia elevar sua utilidade reduzindo o investimento e consumindo mais no
+presente. A igualdade caracteriza uma escolha sem esse incentivo marginal
+à mudança.
+
+A equação de Euler, isoladamente, não fornece o investimento e o consumo
+ótimos. Ela estabelece uma restrição que essas escolhas devem satisfazer,
+em conjunto com os orçamentos e as demais hipóteses do problema.
+
+A expressão pressupõe utilidade diferenciável e côncava, consumo positivo e
+possibilidade de realizar o ajuste marginal, sem custos de transação ou
+restrições de carteira ativas que impeçam essa troca. Pressupõe também
+condições que permitam calcular o efeito marginal sobre a utilidade
+esperada. Para aplicar a relação a dados agregados, adotamos a representação
+de um consumidor representativo. Essas hipóteses fazem parte do modelo
+econômico que será confrontado com os dados.
+
+### Condição de Euler com utilidade CRRA
+
+A equação de Euler anterior vale para a função de utilidade geral $u(C)$,
+sob as hipóteses enunciadas. A **preferência CRRA é uma hipótese adicional**
+que especifica essa função. Substituindo sua utilidade marginal,
+$u'(C)=C^{-\gamma}$, obtemos:
+
+$$
+C_t^{-\gamma}
+=\beta E_t[R_{t+1}C_{t+1}^{-\gamma}].
+$$
+
+O consumo presente é conhecido em $t$. Podemos dividir os dois lados por
+$C_t^{-\gamma}$ e escrever:
+
+$$
+\boxed{
+E_t\left[\beta R_{t+1}
+\left(\frac{C_{t+1}}{C_t}\right)^{-\gamma}\right]=1.
+}
+$$
+
+**Esta é a mesma equação de Euler**, agora especializada para preferências
+CRRA e escrita em termos da variação do consumo. A condição geral iguala
+custos e benefícios marginais; a hipótese CRRA permite expressar essa
+igualdade usando consumo e retorno observáveis e os parâmetros de
+preferências.
+
+A razão $g_{t+1}=C_{t+1}/C_t$ é o **crescimento bruto do consumo**. Se
+$g_{t+1}=1{,}01$, o consumo aumentou 1%. Se $g_{t+1}=0{,}99$, caiu 1%.
+Com essa notação, a condição é $E_t[\beta R_{t+1}g_{t+1}^{-\gamma}]=1$.
+
+A equação relaciona um resultado observável do investimento, $R_{t+1}$,
+a uma variação observável do consumo, $g_{t+1}$, e a dois parâmetros
+desconhecidos, $\beta$ e $\gamma$. Ao subtrair 1 da expressão dentro da
+expectativa, obtemos um erro cuja **expectativa condicional deve ser zero**
+nos parâmetros compatíveis com o modelo. Essa propriedade permite construir
+condições de momento com informações disponíveis na data da decisão.
+
+**A equação de Euler fornece a restrição da teoria econômica; o GMM utiliza
+seus correspondentes amostrais para estimar os parâmetros e avaliar as
+restrições de sobreidentificação.** O método de estimação não garante que
+a restrição econômica seja válida nos dados. Nas próximas seções,
+identificaremos as séries observadas, as informações utilizadas como
+instrumentos e os momentos que essa condição implica.
+
+## Dados e construção dos instrumentos
+
+### Séries de consumo e retornos
+
+A [base preparada pelo projeto QuantEcon](https://github.com/QuantEcon/data-lectures/raw/main/lectures/hansen_singleton_1982_data.csv) contém séries mensais dos Estados Unidos, de **fevereiro de 1959 a dezembro de 1978**. O consumo real de bens não duráveis por pessoa é construído com
+séries do FRED; o retorno de mercado utiliza dados da biblioteca de Ken French,
+com ajuste pela inflação dos bens não duráveis.
+
+As séries aproximam as utilizadas por Hansen e Singleton. Portanto, o exemplo
+permite estudar a aplicação do método, mas não constitui uma reprodução
+numérica exata do artigo original.
+
+| Coluna do arquivo | Significado na aplicação |
+|:-----------------|:------------------------|
+| `date` | Mês da observação, registrado pelo último dia do mês |
+| `gross_real_return` | $R$: retorno bruto real do mercado |
+| `gross_cons_growth` | $g$: crescimento bruto do consumo real por pessoa |
+
+As duas variáveis já são **razões brutas**, próximas de 1. Podemos usá-las
+diretamente na condição de Euler, sem adicionar 1 ou aplicar nova deflação.
+
+```{r}
+#| label: dados-locais
+
+# Importa as séries de consumo e retornos da cópia local do arquivo.
+dados <- read_csv(
+  "C:/Users/paulo/Documents/github/mpa_ecnt3_2026/dados/brutos/quantecon-hansen-singleton-1982.csv",
+  show_col_types = FALSE
+)
+
+# Seleciona o período econômico da aplicação.
+dados <- filter(
+  dados,
+  date >= as.Date("1959-02-28"),
+  date <= as.Date("1978-12-31")
+)
+
+# Coloca os meses em ordem cronológica antes de construir as defasagens.
+dados <- arrange(dados, date)
+
+# Mostra as primeiras observações com nomes que indicam suas unidades.
+knitr::kable(
+  head(dados), digits = 6,
+  col.names = c("Data", "Retorno bruto real", "Crescimento bruto do consumo"),
+  caption = "Primeiros meses das séries de retornos e consumo"
+)
+```
+
+`read_csv()` lê o arquivo. `filter()` mantém as observações no intervalo
+selecionado, e `arrange()` ordena as linhas por data. A ordem é essencial:
+a defasagem deverá representar o mês anterior, e não apenas uma linha
+qualquer do arquivo.
+
+Na tabela, um retorno bruto abaixo de 1 representa perda de poder de compra
+no investimento. Um crescimento bruto do consumo abaixo de 1 representa
+queda do consumo real por pessoa.
+
+### Instrumentos e alinhamento temporal
+
+A condição de Euler envolve o retorno e o crescimento do consumo em $t+1$,
+que ainda são incertos na data da decisão. Para construir os instrumentos,
+utilizaremos informações já observadas em $t$ e $t-1$:
+
+$$
+\mathbf{z}_t=(1,R_t,g_t,R_{t-1},g_{t-1})'.
+$$
+
+Temos cinco instrumentos: a constante, o retorno e o crescimento do consumo
+em $t$, e as mesmas duas variáveis em $t-1$. São duas defasagens em relação
+ao mês do resultado, $t+1$.
+
+No código, `R` e `g` representam os resultados em **$t+1$**. Os nomes `R_t`
+e `g_t` indicam o mês anterior, e `R_tm1` e `g_tm1`, dois meses antes.
+`lag(x, 1)` traz o valor da linha anterior de `x`; `lag(x, 2)` traz o de
+duas linhas antes. Como os dados são mensais, ordenados e sem lacunas,
+essas operações correspondem às defasagens desejadas.
+
+```{r}
+#| label: defasagens
+
+# Preserva os resultados e associa a cada mês informações dos dois meses anteriores.
+# transmute() cria as colunas necessárias e deixa de fora as demais.
+amostra <- transmute(
+  dados,
+  data_resultado = date,
+  R = gross_real_return,
+  g = gross_cons_growth,
+  # Identifica o mês t e as duas informações disponíveis nessa data.
+  data_t = lag(date, 1),
+  R_t = lag(gross_real_return, 1),
+  g_t = lag(gross_cons_growth, 1),
+  # Identifica o mês t-1 e as informações disponíveis um mês antes.
+  data_tm1 = lag(date, 2),
+  R_tm1 = lag(gross_real_return, 2),
+  g_tm1 = lag(gross_cons_growth, 2)
+)
+
+# Retira os meses iniciais que ainda não possuem as duas defasagens.
+amostra <- filter(amostra, !is.na(data_tm1))
+
+# Seleciona as datas para tornar visível o alinhamento entre decisão e resultado.
+datas_alinhadas <- select(amostra, data_resultado, data_t, data_tm1)
+
+# Exibe os primeiros alinhamentos, sem imprimir toda a amostra.
+knitr::kable(
+  head(datas_alinhadas, 3),
+  col.names = c("Resultado em t+1", "Informação em t", "Informação em t-1"),
+  caption = "Datas dos resultados e dos instrumentos"
+)
+```
+
+O resultado de abril de 1959 usa informações de março e fevereiro de 1959.
+Nenhum instrumento contém o retorno ou o consumo de abril. As primeiras duas
+observações do arquivo fornecem informações defasadas, mas não podem ser
+utilizadas como resultados porque não dispomos dos dois meses anteriores
+na base selecionada.
+
+```{r}
+#| label: matriz-instrumentos
+
+# Seleciona as quatro séries defasadas que compõem os instrumentos.
+instrumentos <- select(amostra, R_t, g_t, R_tm1, g_tm1)
+
+# Converte as séries em matriz numérica e acrescenta a coluna constante.
+# cbind() reúne essas colunas, mantendo cada linha vinculada ao mesmo resultado.
+Z <- cbind(constante = 1, as.matrix(instrumentos))
+
+# Guarda a quantidade de observações e de condições de momento.
+N <- nrow(amostra)
+q <- ncol(Z)
+```
+
+Dos **`r nrow(dados)` meses** do arquivo, restam **`r N` observações** para
+estimação, com resultados de abril de 1959 a dezembro de 1978. A matriz `Z`
+tem `r N` linhas e `r q` colunas: cada linha reúne as informações que
+acompanharão um erro da condição de Euler.
+
+As defasagens garantem aqui a precedência temporal. Sua **validade como
+instrumentos**, porém, depende das hipóteses econômicas e informacionais do
+modelo. Ser uma variável passada não garante, por si só, a restrição de
+momento que discutiremos a seguir.
+
+## Condições de momento do CCAPM
+
+### Erro de Euler e expectativa condicional
+
+Vamos escrever a condição econômica como um erro de média condicional zero:
+
+$$
+u_{t+1}(\beta,\gamma)
+=\beta R_{t+1}g_{t+1}^{-\gamma}-1,
+\qquad
+E_t[u_{t+1}(\beta,\gamma)]=0.
+$$
+
+O símbolo $u_{t+1}$ passa a designar o **erro de Euler**; ele é distinto da
+função de utilidade $u(C)$ usada na discussão econômica. O erro mede quanto
+a expressão observada se afasta de 1 para determinados valores dos parâmetros.
+
+Mesmo que o modelo esteja correto, o erro não precisa ser zero em cada mês:
+retornos e consumo futuros podem surpreender o consumidor. A restrição é que,
+nos parâmetros que descrevem suas preferências, essas diferenças não sejam
+previsíveis com as informações disponíveis em $t$.
+
+```{r}
+#| label: erro-euler
+
+# A função recebe theta = c(beta, gamma) e devolve um erro para cada mês.
+erro_euler <- function(theta) {
+  # Separa os dois parâmetros para explicitar seu papel na equação econômica.
+  beta <- theta[1]
+  gamma <- theta[2]
+
+  # Combina retorno e consumo observados e subtrai o valor imposto pela teoria.
+  # O vetor devolvido tem uma posição para cada resultado da amostra.
+  beta * amostra$R * amostra$g^(-gamma) - 1
+}
+```
+
+O argumento `theta` é um vetor com dois números: primeiro $\beta$, depois
+$\gamma$. A função usa as colunas `R` e `g` de `amostra` e devolve um vetor
+com `r N` erros. Valores diferentes dos parâmetros produzem erros diferentes
+para as mesmas observações.
+
+### Instrumentos e condições de momento
+
+Considere uma variável $z_t$ conhecida em $t$. Ao calcular a expectativa
+condicional nessa data, seu valor já está determinado. Portanto, sob as
+hipóteses do modelo e a existência das expectativas envolvidas:
+
+$$
+E[z_tu_{t+1}]
+=E\left[z_t E_t[u_{t+1}]\right]=0.
+$$
+
+A primeira igualdade utiliza a lei das expectativas iteradas; a segunda
+utiliza a condição de Euler. Se a informação passada pudesse prever
+sistematicamente o erro, essa condição não seria satisfeita.
+
+Aplicando a mesma ideia aos cinco instrumentos, obtemos:
+
+$$
+\mathbf{m}_t(\beta,\gamma)
+=\mathbf{z}_t u_{t+1}(\beta,\gamma),
+\qquad E[\mathbf{m}_t(\beta,\gamma)]=\mathbf{0}.
+$$
+
+As cinco condições são $E[u_{t+1}]=0$, $E[R_tu_{t+1}]=0$,
+$E[g_tu_{t+1}]=0$, $E[R_{t-1}u_{t+1}]=0$ e $E[g_{t-1}u_{t+1}]=0$.
+A constante verifica o erro médio; os outros instrumentos verificam se os
+erros apresentam associações sistemáticas com as informações selecionadas.
+
+```{r}
+#| label: funcao-momentos
+
+# A função recebe os mesmos parâmetros e devolve os cinco momentos de cada mês.
+momentos <- function(theta) {
+  # Calcula o erro da condição de Euler para os parâmetros recebidos.
+  erro <- erro_euler(theta)
+
+  # Multiplica cada coluna de Z pelo erro da observação correspondente.
+  # O resultado é uma matriz: meses nas linhas e condições nas colunas.
+  Z * erro
+}
+```
+
+Em `Z * erro`, a multiplicação é feita elemento a elemento: o erro de um mês
+multiplica os cinco instrumentos da mesma linha. A função `momentos(theta)`
+devolve uma matriz com **`r N` linhas e `r q` colunas**. Ainda não calculamos
+médias: cada linha contém a contribuição de uma observação.
+
+### Momentos populacionais e amostrais
+
+As restrições anteriores dizem respeito à **população**. Na amostra,
+representamos as expectativas pelas médias das colunas da matriz de momentos:
+
+$$
+\mathbf{g}_N(\beta,\gamma)
+=\frac{1}{N}\sum_{t=1}^{N}\mathbf{m}_t(\beta,\gamma).
+$$
+
+O índice da soma enumera as observações disponíveis após as defasagens.
+O vetor $\mathbf{g}_N$ contém cinco médias. Mesmo nos parâmetros corretos,
+essas médias geralmente não serão exatamente zero em uma amostra finita.
+
+No código a seguir, `colMeans()` fará essa passagem: de uma matriz com os
+momentos de cada mês para um vetor com suas cinco médias. A coluna `g`
+continua representando o crescimento bruto do consumo; ela não se confunde
+com o vetor de momentos amostrais $\mathbf{g}_N$.
+
+## Estimação GMM em dois passos
+
+### Sobreidentificação e função objetivo
+
+Se houvesse apenas duas condições não redundantes para dois parâmetros,
+poderíamos procurar valores que zerassem as duas médias. Aqui, temos **cinco
+condições para dois parâmetros**. Em geral, ajustar os parâmetros para
+aproximar uma média de zero afasta outras: não há uma solução que zere todas
+simultaneamente.
+
+O GMM escolhe os parâmetros que tornam os momentos amostrais **conjuntamente
+próximos de zero**, minimizando:
+
+$$
+Q_N(\boldsymbol{\theta};\mathbf{W})
+=\mathbf{g}_N(\boldsymbol{\theta})'
+\mathbf{W}\mathbf{g}_N(\boldsymbol{\theta}),
+\qquad \boldsymbol{\theta}=(\beta,\gamma)'.
+$$
+
+A função objetivo $Q_N$ transforma as cinco médias em um único número.
+A matriz $\mathbf{W}$ determina sua ponderação. Com a identidade, o critério
+é simplesmente a soma dos quadrados das médias. Uma ponderação estimada
+permite considerar diferenças de variabilidade e correlações entre os
+momentos, evitando tratar informações muito semelhantes como independentes.
+
+```{r}
+#| label: objetivo
+
+# A função recebe os parâmetros theta e a matriz de ponderação W.
+# Devolve um único número que mede o afastamento conjunto das médias de zero.
+objetivo <- function(theta, W) {
+  # Resume as contribuições mensais em uma média para cada condição de momento.
+  media <- colMeans(momentos(theta))
+
+  # Pondera as médias por W e calcula seu produto com o vetor original.
+  # drop() apresenta o resultado como um número, em vez de uma matriz 1 x 1.
+  drop(crossprod(media, W %*% media))
+}
+```
+
+No cálculo, `%*%` realiza a multiplicação matricial de `W` pelo vetor `media`.
+`crossprod(media, ...)` multiplica o vetor transposto por esse resultado,
+implementando exatamente a expressão $\mathbf{g}_N'\mathbf{W}\mathbf{g}_N$.
+Para uma mesma matriz de ponderação, um critério menor significa que os
+momentos estão conjuntamente mais próximos de zero.
+
+O número de condições não basta para identificar os parâmetros. É necessário
+que os momentos sejam válidos e que mudem de maneira suficientemente
+informativa quando $\beta$ e $\gamma$ variam. Instrumentos com pouca informação
+podem resultar em estimativas imprecisas mesmo quando há condições excedentes.
+
+```{r}
+#| label: infraestrutura-numerica
+#| include: false
+
+# Calcula como as médias dos momentos respondem a mudanças nos parâmetros.
+jacobiano <- function(theta) {
+  base <- amostra$R * amostra$g^(-theta[2])
+  derivadas <- cbind(base, -theta[1] * base * log(amostra$g))
+  crossprod(Z, derivadas) / N
+}
+gradiente <- function(theta, W) {
+  media <- colMeans(momentos(theta))
+  drop(2 * crossprod(jacobiano(theta), W %*% media))
+}
+
+# Estima a covariância por produtos contemporâneos não centrados.
+# O pequeno ajuste na diagonal estabiliza a inversão numérica.
+cov_momentos <- function(theta) {
+  M <- momentos(theta)
+  crossprod(M) / N + 1e-8 * diag(q)
+}
+
+# Calcula a pseudoinversa, mantendo os valores singulares numericamente relevantes.
+inversa_svd <- function(matriz) {
+  decomposicao <- svd(matriz)
+  inversos <- ifelse(decomposicao$d > 1e-15 * max(decomposicao$d),
+                     1 / decomposicao$d, 0)
+  decomposicao$v %*% (inversos * t(decomposicao$u))
+}
+
+# Busca o menor critério a partir do ponto inicial e de cinco pontos de uma grade.
+# Mantém os mesmos limites e opções numéricas nos dois passos do GMM.
+minimizar_gmm <- function(W, inicial, objetivo, gradiente) {
+  grade <- expand.grid(beta = seq(0.85, 1.5, length.out = 33),
+                       gamma = seq(-2, 10, length.out = 33))
+  valores <- apply(grade, 1, objetivo, W = W)
+  melhores <- order(valores)[1:5]
+  partidas <- rbind(inicial, as.matrix(grade[melhores, ]))
+
+  ajustes <- lapply(seq_len(nrow(partidas)), function(i) {
+    optim(partidas[i, ], fn = objetivo, gr = gradiente, W = W,
+          method = "L-BFGS-B", lower = c(0.85, -2), upper = c(1.5, 10),
+          control = list(maxit = 25000, factr = 1e7, pgtol = 1e-5))
+  })
+
+  valores_finais <- vapply(ajustes, function(x) x$value, numeric(1))
+  if (!any(is.finite(valores_finais))) stop("Nenhum mínimo finito.")
+  melhor <- ajustes[[which.min(valores_finais)]]
+  if (melhor$convergence != 0) stop("O melhor ajuste não convergiu.")
+  melhor
+}
+```
+
+### Primeiro passo: ponderação identidade
+
+A ponderação eficiente depende de uma matriz de covariâncias desconhecida.
+Para começar, adotamos uma escolha simples, a **matriz identidade**:
+
+$$
+\mathbf{W}_0=\mathbf{I}_5,
+\qquad
+\widehat{\boldsymbol{\theta}}^{(1)}
+=\underset{\boldsymbol{\theta}}{\arg\min}\;
+Q_N(\boldsymbol{\theta};\mathbf{W}_0).
+$$
+
+A rotina auxiliar `minimizar_gmm()` procura os parâmetros que minimizam
+a função objetivo. Ela recebe a ponderação `W`, os valores `inicial`, a função
+`objetivo` e uma rotina `gradiente` que orienta a busca numérica. Os detalhes
+dessa busca ficam nas funções definidas neste próprio arquivo; o aspecto econométrico a acompanhar
+é **qual função está sendo minimizada e com qual ponderação**.
+
+```{r}
+#| label: primeiro-passo
+
+# Cria a identidade de ordem q: com ela, o critério soma os quadrados das médias.
+W0 <- diag(q)
+
+# Obtém parâmetros preliminares, começando a busca em beta = 0,99 e gamma = 1.
+passo1 <- minimizar_gmm(
+  W = W0, inicial = c(0.99, 1),
+  objetivo = objetivo, gradiente = gradiente
+)
+```
+
+`diag(q)` cria uma matriz com 1 na diagonal e 0 nas outras posições.
+O resultado `passo1` reúne informações da estimação; `passo1$par` contém
+os dois parâmetros encontrados. Sua função nesta etapa é permitir estimar
+a covariância dos momentos, preparando uma nova ponderação. Não atribuímos
+interpretação econômica substantiva a esses valores preliminares.
+
+### Atualização da matriz de ponderação
+
+Momentos muito variáveis têm menor precisão. Momentos muito correlacionados
+contêm informação parcialmente sobreposta. A matriz de covariâncias
+$\boldsymbol{\Omega}$ descreve essas duas características e, sob as hipóteses
+do GMM, sua inversa fornece a ponderação eficiente.
+
+Nesta aplicação de um período, as hipóteses condicionais do CCAPM implicam
+momentos sem autocovariâncias populacionais diferentes de zero. Estimamos,
+portanto, a covariância contemporânea usando os momentos avaliados nos
+parâmetros preliminares. Sua construção amostral é baseada em:
+
+$$
+\frac{1}{N}\sum_{t=1}^{N}
+\mathbf{m}_t(\widehat{\boldsymbol{\theta}}^{(1)})
+\mathbf{m}_t(\widehat{\boldsymbol{\theta}}^{(1)})'.
+$$
+
+Os produtos de cada momento por ele mesmo informam sua variabilidade; os
+produtos entre momentos diferentes informam como variam conjuntamente.
+Sob a hipótese de momentos populacionais iguais a zero, esses produtos
+permitem estimar a covariância. Denotamos a matriz estimada por
+$\widehat{\boldsymbol{\Omega}}_1$ e a nova ponderação por
+$\widehat{\mathbf{W}}_1=\widehat{\boldsymbol{\Omega}}_1^{-1}$.
+
+```{r}
+#| label: ponderacao
+
+# Estima a covariância dos momentos a partir dos parâmetros do primeiro passo.
+Omega1 <- cov_momentos(passo1$par)
+
+# Obtém a ponderação que considera a variabilidade e a correlação dos momentos.
+W1 <- inversa_svd(Omega1)
+```
+
+`cov_momentos()` recebe o vetor de parâmetros e devolve a matriz estimada
+de covariâncias dos cinco momentos. `inversa_svd()` realiza sua inversão
+numérica. Essas rotinas auxiliares cuidam dos cálculos necessários para
+construir a ponderação; os momentos utilizados continuam sendo os mesmos.
+
+### Segundo passo: ponderação estimada
+
+Mantemos a ponderação estimada fixa e minimizamos novamente o critério:
+
+$$
+\widehat{\boldsymbol{\theta}}^{(2)}
+=\underset{\boldsymbol{\theta}}{\arg\min}\;
+Q_N(\boldsymbol{\theta};\widehat{\mathbf{W}}_1).
+$$
+
+```{r}
+#| label: segundo-passo
+
+# Reestima os dois parâmetros usando a ponderação construída no passo anterior.
+passo2 <- minimizar_gmm(
+  W = W1, inicial = passo1$par,
+  objetivo = objetivo, gradiente = gradiente
+)
+
+# Extrai as estimativas finais na ordem beta e gamma.
+theta_final <- passo2$par
+```
+
+Os dois passos utilizam as **mesmas condições de momento e a mesma amostra**.
+A mudança está na ponderação. A primeira estimativa viabiliza a construção
+dessa ponderação; a segunda fornece o resultado que interpretaremos.
+
+## Estimativas e interpretação econômica
+
+### Estimativa pontual e erro-padrão
+
+As estimativas pontuais são os valores de $\beta$ e $\gamma$ encontrados
+pelo GMM. Como dependem de uma amostra, precisam ser acompanhadas de uma
+medida de precisão. O **erro-padrão** estima a variabilidade da estimativa
+que surgiria em amostragens repetidas, sob as hipóteses do procedimento.
+
+Para calcular essa precisão, utilizamos a covariância dos momentos e a
+sensibilidade de suas médias a mudanças nos parâmetros, avaliadas nas
+estimativas finais. As rotinas auxiliares organizam esses cálculos em uma
+matriz `V`, que contém as variâncias e covariâncias estimadas dos dois
+parâmetros. Esse cálculo é uma aproximação assintótica, que depende de
+especificação correta, identificação regular e outras condições de
+regularidade.
+
+```{r}
+#| label: infraestrutura-inferencia
+#| include: false
+
+# Calcula a precisão nas estimativas finais, sem nova minimização dos parâmetros.
+Omega2 <- cov_momentos(theta_final)
+W2 <- inversa_svd(Omega2)
+D <- jacobiano(theta_final)
+V <- inversa_svd(crossprod(D, W2 %*% D)) / N
+```
+
+```{r}
+#| label: resultados
+
+# Extrai as variâncias da diagonal de V e tira suas raízes para obter erros-padrão.
+erros_padrao <- sqrt(diag(V))
+
+# Reúne os parâmetros finais e sua precisão em uma tabela de interpretação.
+resultados <- data.frame(
+  Parametro = c("Fator de desconto (beta)", "Aversão relativa ao risco (gamma)"),
+  Estimativa = theta_final,
+  Erro_padrao = erros_padrao
+)
+
+# Apresenta somente os resultados finais, com quatro casas decimais.
+knitr::kable(
+  resultados, digits = 4, row.names = FALSE,
+  col.names = c("Parâmetro", "Estimativa", "Erro-padrão"),
+  caption = "Parâmetros do CCAPM estimados por GMM em dois passos"
+)
+```
+
+Aqui, `diag(V)` extrai as variâncias estimadas dos parâmetros, e `sqrt()`
+calcula suas raízes quadradas. Essas medidas não são a volatilidade dos
+retornos ou do consumo: são medidas da **incerteza sobre as estimativas**.
+
+### Fator de desconto intertemporal
+
+Obtivemos **$\widehat{\beta}=$ `r theta_final[1]`**, com erro-padrão
+de **`r erros_padrao[1]`**. Como os dados são mensais, $\beta$ mede o
+desconto entre um mês e o seguinte. O valor próximo de 1 indica peso elevado
+para a utilidade do consumo no mês seguinte em relação ao mês atual, dentro
+da estrutura de preferências adotada.
+
+O resultado não significa que o investidor conhece o consumo futuro ou que
+existe um retorno garantido igual a $1/\widehat{\beta}$. A condição de Euler
+combina desconto, risco e variação da utilidade marginal. Além disso, a
+distância da estimativa até 1 deve ser avaliada considerando seu erro-padrão.
+
+### Aversão relativa ao risco
+
+Obtivemos **$\widehat{\gamma}=$ `r theta_final[2]`**, com erro-padrão
+de **`r erros_padrao[2]`**. O sinal pontual é compatível com aversão
+ao risco e utilidade marginal decrescente. Pela relação
+$u'(C)=C^{-\gamma}$, a estimativa descreve como a utilidade marginal reage
+a mudanças proporcionais no consumo.
+
+Entretanto, o erro-padrão é maior que a própria estimativa. Uma aproximação
+normal convencional não distinguiria esse resultado de zero a 5%. Portanto,
+não temos uma medida precisa da magnitude da aversão ao risco nesta aplicação.
+Essa imprecisão não autoriza concluir que os consumidores sejam indiferentes
+ao risco.
+
+A baixa precisão pode refletir pouca informação dos dados e instrumentos
+sobre os parâmetros, mas **não demonstra, por si só, identificação fraca em
+sentido formal**. A existência de cinco condições e o sucesso de uma busca
+numérica não asseguram identificação forte nem validade econômica dos
+momentos.
+
+## Teste J de sobreidentificação
+
+### Hipótese nula e graus de liberdade
+
+O GMM estimou dois parâmetros combinando cinco condições de momento.
+Restam **três restrições excedentes**, que permitem avaliar se esse conjunto
+de condições é compatível com os dados.
+
+A hipótese nula do teste J é que **existe um vetor de parâmetros que
+satisfaz conjuntamente as cinco condições de momento populacionais**.
+Mesmo sob essa hipótese, as médias amostrais não serão exatamente zero.
+O teste avalia se o afastamento observado é grande em relação à variabilidade
+esperada.
+
+Sob as hipóteses regulares do GMM, a estatística é:
+
+$$
+J=N\,\mathbf{g}_N(\widehat{\boldsymbol{\theta}}^{(2)})'
+\widehat{\mathbf{W}}_2
+\mathbf{g}_N(\widehat{\boldsymbol{\theta}}^{(2)})
+\ \overset{a}{\sim}\ \chi^2_{q-k},
+\qquad q-k=5-2=3.
+$$
+
+A ponderação final $\widehat{\mathbf{W}}_2$ é calculada a partir dos momentos
+avaliados nas estimativas finais. Essa atualização serve à inferência e ao
+diagnóstico; os parâmetros permanecem os estimados no segundo passo.
+
+Valores elevados de J indicam maior afastamento conjunto dos momentos em
+relação a zero. O **valor-p** é a probabilidade, sob a hipótese nula e a
+aproximação qui-quadrado, de obter uma estatística pelo menos tão grande
+quanto a observada. Por isso, utilizamos a **cauda direita** da distribuição.
+
+```{r}
+#| label: teste-j
+
+# Multiplica o critério ponderado final pelo número de observações.
+J <- N * objetivo(theta_final, W2)
+
+# Subtrai os dois parâmetros estimados das cinco condições de momento.
+gl <- q - length(theta_final)
+
+# Calcula a probabilidade de uma qui-quadrado exceder o J observado, sob H0.
+valor_p <- pchisq(J, df = gl, lower.tail = FALSE)
+
+# Organiza a estatística e as informações necessárias para interpretar o teste.
+resultado_J <- data.frame(J = J, Graus_de_liberdade = gl, Valor_p = valor_p)
+
+# Apresenta o diagnóstico de sobreidentificação em uma tabela compacta.
+knitr::kable(
+  resultado_J, digits = 4,
+  col.names = c("Estatística J", "Graus de liberdade", "Valor-p"),
+  caption = "Teste J das restrições de sobreidentificação"
+)
+```
+
+`pchisq()` calcula probabilidades da distribuição qui-quadrado. O argumento
+`df = gl` informa os três graus de liberdade, e `lower.tail = FALSE`
+seleciona a probabilidade à direita de J, que corresponde ao valor-p.
+
+### Interpretação do resultado
+
+Obtivemos **$J=$ `r J`**, com **`r gl` graus de liberdade** e
+**valor-p de `r valor_p`**. Ao nível de 5%, não rejeitamos a
+compatibilidade conjunta das condições de momento. Ao nível de 10%, haveria
+rejeição. O resultado, portanto, pede cautela: a conclusão depende do nível
+de significância adotado.
+
+A não rejeição a 5% **não comprova que o CCAPM seja verdadeiro**, que cada
+instrumento seja válido ou que os parâmetros estejam bem identificados.
+O teste examina as restrições conjuntamente e pode ter poder limitado.
+Se houvesse rejeição, ela apontaria incompatibilidade com o conjunto de
+restrições, sem identificar isoladamente a hipótese responsável.
+
+O diagnóstico depende também da adequação da matriz de covariâncias e da
+aproximação assintótica. Por isso, o teste J complementa a análise econômica
+e a avaliação da precisão; não funciona como um selo automático de validade
+do modelo.
+
+## Resumo da atividade
+
+Partimos da escolha entre consumo presente e futuro. A igualdade entre o
+custo marginal de poupar e o benefício marginal esperado e descontado do
+investimento forneceu a condição de Euler. Com utilidade CRRA, essa condição
+relacionou retornos e crescimento do consumo aos parâmetros $\beta$ e
+$\gamma$.
+
+Ao multiplicar o erro de Euler por informações disponíveis antes do resultado,
+obtivemos cinco condições de momento populacionais. Suas médias amostrais
+foram combinadas pelo GMM para estimar dois parâmetros: primeiro com uma
+ponderação simples, depois com uma ponderação baseada na covariância dos
+momentos.
+
+A estimativa de $\beta$ ficou próxima de 1, enquanto a magnitude de $\gamma$
+foi estimada com baixa precisão. O teste J não rejeitou o conjunto de
+restrições a 5%, mas essa não rejeição não elimina a incerteza sobre as
+preferências nem comprova a validade do modelo.
+
+A contribuição do GMM é permitir **estimar parâmetros e avaliar restrições
+a partir de condições de momento fundamentadas economicamente**. Sua
+utilidade depende da qualidade dessas condições, da informação disponível
+para identificar os parâmetros e da adequação dos procedimentos de
+inferência. Essa mesma lógica de combinar momentos será utilizada no estudo
+de modelos dinâmicos para dados em painel.
+
+## Referências
+
+::: {#refs}
+:::

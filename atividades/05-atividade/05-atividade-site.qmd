@@ -1,0 +1,437 @@
+---
+title: "Econometria III <br> Atividade 5"
+subtitle: "Modelos dinâmicos em painel com R"
+author: "Paulo Aragão Daldegan"
+lang: pt-BR
+format:
+  html:
+    toc: true
+    embed-resources: true
+execute:
+  echo: true
+  warning: false
+  message: false
+---
+
+Este arquivo reúne os códigos para reproduzir as estimações e os diagnósticos da Atividade 5. Execute os blocos na ordem apresentada, no seu projeto/repositório da disciplina, com os pacotes utilizados já instalados.
+
+
+
+## Dados e modelo
+
+Utilizamos os dados `Invest1993`, do Exercício 17.17 de Hansen (2022): um painel não balanceado com 27.566 observações de 1.962 empresas norte-americanas, entre 1960 e 1991.
+
+O modelo AR(1) para a razão de endividamento é:
+
+$$
+D_{it} = \rho D_{i,t-1} + \alpha_i + \varepsilon_{it},
+$$
+
+em que $\rho$ mede a persistência, $\alpha_i$ é o efeito individual e $\varepsilon_{it}$ é o erro idiossincrático. Utilizamos `cusip` (empresa), `year` (ano) e `debta` (dívida de longo prazo dividida pelos ativos), sem regressoras adicionais ou efeitos de tempo.
+
+
+
+## Preparação dos dados
+
+O arquivo `Invest1993.dta` deve estar em `dados/brutos/`, como no repositório da disciplina.
+
+```{r}
+#| label: setup
+
+# Define a precisão de impressão e evita notação científica nos resultados.
+options(digits = 5, scipen = 999)
+
+# Carrega os pacotes utilizados na atividade.
+library(here)
+library(haven)
+library(tidyverse)
+library(modelsummary)
+library(plm)
+
+# Define o caminho do arquivo de dados a partir da raiz do projeto.
+arquivo_invest <- here("dados/brutos/Invest1993.dta")
+
+# Importa a base de dados original de Hansen.
+dados_invest <- haven::read_dta(arquivo_invest)
+```
+
+```{r}
+#| label: estrutura-painel
+
+# Seleciona as variáveis utilizadas no modelo e ordena as observações.
+dados_invest <- dados_invest |>
+  select(cusip, year, debta) |>
+  arrange(cusip, year)
+
+# Examina a estrutura dos dados.
+glimpse(dados_invest)
+```
+
+Declaramos os índices de empresa e ano para que o `plm` construa as defasagens respeitando a estrutura temporal do painel.
+
+```{r}
+#| label: indices-painel
+
+# Declara os índices de empresa e ano.
+painel_invest <- plm::pdata.frame(
+  dados_invest,
+  index = c("cusip", "year")
+)
+
+# Verifica as dimensões e o balanceamento do painel.
+plm::pdim(painel_invest)
+```
+
+O painel é não balanceado. O código abaixo resume o número de períodos por empresa.
+
+```{r}
+#| label: periodos-empresa
+
+# Conta os períodos observados para cada empresa.
+periodos_empresa <- dados_invest |>
+  dplyr::count(cusip, name = "n_periodos")
+
+# Resume a distribuição do número de períodos por empresa.
+summary(periodos_empresa$n_periodos)
+```
+
+
+
+## MQO combinado e efeitos fixos
+
+Estimamos o mesmo modelo por MQO combinado e efeitos fixos individuais. Para a inferência, utilizamos erros-padrão robustos à heterocedasticidade e à correlação dos erros dentro de cada empresa.
+
+```{r}
+#| label: estimacao-mqo-ef
+
+# Estima o modelo dinâmico por MQO combinado.
+modelo_mqo <- plm(
+  debta ~ lag(debta, 1),
+  data = painel_invest,
+  model = "pooling",
+  effect = "individual"
+)
+
+# Estima o mesmo modelo por efeitos fixos individuais.
+modelo_ef <- plm(
+  debta ~ lag(debta, 1),
+  data = painel_invest,
+  model = "within",
+  effect = "individual"
+)
+```
+
+```{r}
+#| label: inferencia-mqo-ef
+
+# Calcula a matriz de covariância robusta do MQO combinado.
+V_mqo <- vcovHC(
+  modelo_mqo,
+  # Permite heterocedasticidade e correlação dos erros dentro de cada empresa.
+  method = "arellano",
+  # Aplica a correção HC1 para amostras finitas.
+  type = "HC1",
+  # Agrupa os erros por empresa (unidade individual do painel).
+  cluster = "group"
+)
+
+# Calcula a matriz robusta dos efeitos fixos com as mesmas opções.
+V_ef <- vcovHC(
+  modelo_ef,
+  # Permite heterocedasticidade e correlação dos erros dentro de cada empresa.
+  method = "arellano",
+  # Aplica a correção HC1 para amostras finitas.
+  type = "HC1",
+  # Agrupa os erros por empresa.
+  cluster = "group"
+)
+
+# Apresenta os coeficientes estimados e seus erros-padrão robustos.
+modelsummary(
+  # Define os modelos e os títulos das colunas.
+  models = list(
+    "MQO combinado" = modelo_mqo,
+    "Efeitos fixos" = modelo_ef
+  ),
+  # Utiliza as matrizes robustas para calcular os erros-padrão apresentados.
+  vcov = list(V_mqo, V_ef),
+  # Seleciona o coeficiente de persistência e define seu nome na tabela.
+  coef_map = c("lag(debta, 1)" = "Persistência (ρ)"),
+  # Omite as estatísticas de ajuste dos modelos.
+  gof_map = NA,
+  # Apresenta os erros-padrão e os intervalos de confiança. 
+  statistic = c("std.error", "conf.int"),
+  # Define o nível de confiança em 95%.
+  conf_level = 0.95,
+  # Apresenta os resultados com quatro casas decimais.
+  fmt = 4
+)
+```
+
+Esses erros-padrão não corrigem os problemas de estimação do modelo dinâmico: o MQO combinado omite o efeito individual, que pode estar correlacionado com a variável dependente defasada; efeitos fixos está sujeito ao viés de Nickell quando a dimensão temporal é finita.
+
+
+
+## GMM em diferenças (Arellano–Bond)
+
+O GMM em diferenças elimina os efeitos individuais pela primeira diferença e utiliza níveis defasados como instrumentos (Arellano e Bond, 1991). Sua validade depende das condições de momento, incluindo as restrições sobre a correlação serial dos erros em nível. Usamos defasagens de 2 a 6 períodos e instrumentos colapsados para limitar sua quantidade.
+
+```{r}
+#| label: estimacao-gmm-diferencas
+
+# Estima o modelo AR(1) pelo GMM em diferenças de duas etapas.
+modelo_gmm_dif <- plm::pgmm(
+  # Define o regressor defasado e, após |, os instrumentos em nível.
+  formula = debta ~ lag(debta, 1) | lag(debta, 2:6),
+
+  # Utiliza o painel com os índices de empresa e ano.
+  data = painel_invest,
+
+  # Considera efeitos individuais, sem efeitos adicionais de tempo.
+  effect = "individual",
+
+  # Estima o GMM em duas etapas.
+  model = "twosteps",
+
+  # Aplica a transformação em primeiras diferenças.
+  transformation = "d",
+
+  # Colapsa a matriz de instrumentos para reduzir sua quantidade.
+  collapse = TRUE,
+
+  # Define a matriz de ponderação inicial para o GMM em diferenças.
+  fsm = "G"
+)
+```
+
+Para a inferência do GMM de duas etapas, calculamos erros-padrão robustos com correção de Windmeijer (2005) e um intervalo de confiança assintótico de 95%.
+
+```{r}
+#| label: inferencia-gmm-diferencas
+
+# Calcula a matriz de covariância robusta com correção de Windmeijer.
+V_gmm_dif <- plm::vcovHC(modelo_gmm_dif)
+
+# Extrai o coeficiente de persistência estimado.
+rho_gmm <- unname(coef(modelo_gmm_dif)[1])
+
+# Calcula o erro-padrão pela raiz quadrada da variância estimada.
+ep_gmm <- sqrt(V_gmm_dif[1, 1])
+
+# Calcula a margem de erro usando o valor crítico normal de 1,96.
+# Para um IC bilateral de 95%, qnorm(0.975) fornece esse valor.
+margem <- qnorm(0.975) * ep_gmm
+
+# Organiza a estimativa, o erro-padrão e os limites do IC em uma tabela.
+modelsummary::datasummary_df(
+  tibble(
+    Estimativa = rho_gmm,
+    `Erro-padrão` = ep_gmm,
+    `IC inferior (95%)` = rho_gmm - margem,
+    `IC superior (95%)` = rho_gmm + margem
+  ),
+  fmt = 4
+)
+```
+
+
+
+## GMM em sistema (Blundell–Bond)
+
+O GMM em sistema combina equações em diferenças e em níveis (Blundell e Bond, 1998). Nas equações em níveis, utiliza diferenças defasadas como instrumentos adicionais. Sua validade exige uma restrição adicional sobre as condições iniciais: as variações passadas do endividamento não devem estar correlacionadas com o efeito individual, além das hipóteses sobre o erro idiossincrático.
+
+Mantemos o modelo AR(1), a estimação em duas etapas e os instrumentos colapsados. A opção `transformation = "ld"` define a estimação em sistema.
+
+```{r}
+#| label: estimacao-gmm-sistema
+
+# Estima o modelo AR(1) pelo GMM em sistema de duas etapas.
+modelo_gmm_sis <- plm::pgmm(
+  # Define o regressor defasado e os instrumentos em níveis (defasagens 2 a 6).
+  # O GMM em sistema acrescenta diferenças defasadas como instrumentos.
+  formula = debta ~ lag(debta, 1) | lag(debta, 2:6),
+
+  # Utiliza o painel com os índices de empresa e ano.
+  data = painel_invest,
+
+  # Considera efeitos individuais, sem efeitos adicionais de tempo.
+  effect = "individual",
+
+  # Estima o GMM em duas etapas.
+  model = "twosteps",
+
+  # Combina equações em primeiras diferenças e em níveis.
+  transformation = "ld",
+
+  # Colapsa a matriz de instrumentos para reduzir sua quantidade.
+  collapse = TRUE,
+
+  # Utiliza a matriz de ponderação inicial completa do sistema,
+  # incluindo a covariância entre os blocos de equações.
+  fsm = "full"
+)
+```
+
+Calculamos a mesma correção de Windmeijer e o intervalo de confiança assintótico de 95%.
+
+```{r}
+#| label: inferencia-gmm-sistema
+
+# Calcula a matriz de covariância robusta com correção de Windmeijer.
+V_gmm_sis <- plm::vcovHC(modelo_gmm_sis)
+
+# Obtém o coeficiente de persistência estimado e seu erro-padrão corrigido.
+rho_gmm_sis <- unname(coef(modelo_gmm_sis)[1])
+ep_gmm_sis <- sqrt(V_gmm_sis[1, 1])
+
+# Calcula a margem de erro para o IC assintótico de 95%.
+# O valor crítico normal é obtido por qnorm(0.975).
+margem_gmm_sis <- qnorm(0.975) * ep_gmm_sis
+
+# Apresenta a estimativa, o erro-padrão e os limites do IC.
+modelsummary::datasummary_df(
+  tibble(
+    Estimativa = rho_gmm_sis,
+    `Erro-padrão` = ep_gmm_sis,
+    `IC inferior (95%)` = rho_gmm_sis - margem_gmm_sis,
+    `IC superior (95%)` = rho_gmm_sis + margem_gmm_sis
+  ),
+  fmt = 4
+)
+```
+
+
+
+## Diagnósticos dos modelos GMM
+
+### Autocorrelação de Arellano–Bond
+
+Os testes examinam os erros em primeiras diferenças. A hipótese nula é a ausência de autocorrelação da ordem indicada. Espera-se rejeitar AR(1) e não rejeitar AR(2), padrão compatível com as hipóteses dos instrumentos em níveis defasados, sem comprovar sua validade.
+
+```{r}
+#| label: testes-autocorrelacao-gmm
+
+# Realiza os testes AR(1) e AR(2) para o GMM em diferenças.
+ar1_dif <- plm::mtest(modelo_gmm_dif, order = 1, vcov = V_gmm_dif)
+ar2_dif <- plm::mtest(modelo_gmm_dif, order = 2, vcov = V_gmm_dif)
+
+# Realiza os mesmos testes para o GMM em sistema.
+ar1_sis <- plm::mtest(modelo_gmm_sis, order = 1, vcov = V_gmm_sis)
+ar2_sis <- plm::mtest(modelo_gmm_sis, order = 2, vcov = V_gmm_sis)
+```
+
+
+### Teste J de sobreidentificação
+
+A hipótese nula é a validade conjunta das restrições de sobreidentificação. Em modelos de duas etapas, `weights = "twosteps"` utiliza a ponderação robusta da segunda etapa para calcular o teste J de Hansen, embora a saída da função se chame *Sargan test*. Não rejeitar a hipótese nula não comprova a validade dos instrumentos.
+
+```{r}
+#| label: testes-sobreidentificacao-gmm
+
+# Realiza o teste J com a matriz de ponderação da segunda etapa.
+j_dif <- plm::sargan(modelo_gmm_dif, weights = "twosteps")
+j_sis <- plm::sargan(modelo_gmm_sis, weights = "twosteps")
+```
+
+
+### Quantidade de instrumentos
+
+Contamos as colunas das matrizes de instrumentos armazenadas em `$W` e as empresas com pelo menos um instrumento não nulo. A função `purrr::map_lgl()` verifica essa condição para cada empresa; `sum()` conta os resultados `TRUE`.
+
+```{r}
+#| label: quantidade-instrumentos-gmm
+
+# Conta os instrumentos pelas colunas das matrizes de cada modelo.
+instrumentos_dif <- ncol(modelo_gmm_dif$W[[1]])
+instrumentos_sis <- ncol(modelo_gmm_sis$W[[1]])
+
+# Conta as empresas com pelo menos um instrumento não nulo.
+empresas_dif <- modelo_gmm_dif$W |>
+  purrr::map_lgl(~ any(.x != 0)) |>
+  sum()
+
+empresas_sis <- modelo_gmm_sis$W |>
+  purrr::map_lgl(~ any(.x != 0)) |>
+  sum()
+```
+
+### Tabela dos diagnósticos
+
+```{r}
+#| label: resultados-diagnosticos-gmm
+
+# Organiza os valores-p dos testes e as contagens dos dois modelos.
+tabela_diagnosticos <- tibble(
+  Diagnóstico = c(
+    "AR(1): valor-p",
+    "AR(2): valor-p",
+    "Teste J: valor-p",
+    "Número de instrumentos",
+    "Empresas com instrumentos"
+  ),
+  `GMM em diferenças` = c(
+    format.pval(c(ar1_dif$p.value, ar2_dif$p.value, j_dif$p.value)),
+    instrumentos_dif,
+    empresas_dif
+  ),
+  `GMM em sistema` = c(
+    format.pval(c(ar1_sis$p.value, ar2_sis$p.value, j_sis$p.value)),
+    instrumentos_sis,
+    empresas_sis
+  )
+)
+
+# Apresenta os diagnósticos em uma tabela comparativa.
+modelsummary::datasummary_df(tabela_diagnosticos)
+```
+
+A escolha do estimador deve considerar conjuntamente as estimativas, sua precisão, os diagnósticos e as hipóteses de identificação. Um valor-p maior no teste J não indica, por si só, um estimador superior. Poucos instrumentos em relação ao número de empresas também não garantem sua validade (Roodman, 2009).
+
+Os diagnósticos apresentados não testam separadamente as condições adicionais do GMM em sistema; essa limitação deve ser considerada na interpretação dos resultados.
+
+
+
+## Respostas ao exercício
+
+Responda às quatro questões do enunciado da Atividade 5 nos espaços abaixo. Substitua os textos em itálico por suas respostas, apresentando os cálculos e as justificativas pertinentes. Não é necessário realizar novas estimações.
+
+
+### Questão 1 — Persistência do endividamento
+
+A partir do aumento transitório de 10 pontos percentuais na razão de endividamento de uma empresa, a parcela que permaneceria em 1 ano seria de aproximadamente 7,123 pontos percentuais. Considerando 2 anos, $10 \times (0,7123)^2$, a parcela remanescente é de aproximadamente 5,074 pontos percentuais.
+
+
+
+### Questão 2 — MQO combinado e efeitos fixos
+
+As duas estimativas podem ser inconsistentes por possuirem fontes de endogeneidade. Em MQO combinado, a heterogeneidade individual não observada é omitida na regressão, compondo assim o erro e constituindo essa fonte de viés, tendendo a superestimar a persistência. No caso de efeitos fixos, ao aplicar a transformação whitin subtraindo as médias individuais, remove-se a heterogeneidade individual não abservada, mas torna endógena a variável dependente defasada transformada ocasionada pelo viés de Nickell, tendendo a subestimar a persistência. 
+
+Utilizar erro padrão robusto não resolve, pois se trata de problemas relacionados a endogeneidade e não a parte de inferência estatística do modelo.
+
+
+
+### Questão 3 — Instrumentos dos modelos dinâmicos com GMM
+
+Utilizando GMM em diferenças, a estratégia é utilizar $D_{i,t-2}$ como instrumento para $\Delta D_{i,t-1}$, com as hipóteses adicionais de relevância (o instrumento precisa estar correlacionado com o regressor endógeno) e exogeneidade instrumental (o instrumento não pode estar correlacionado com o erro da equação diferenciada), com defasagens mais antigas também podendo ser utilizadas se seguirem as hipóteses adicionais. 
+
+Utilizando GMM em sistema, para a equação de diferenças, são utilizado os mesmos instrumentos citados a cima; para a equação em nível, é utilizado como instrumento $\Delta D_{i,t-1}$ para a variável $D_{i,t-1}$. As mesmas hipóteses acima devem ser satisfeitas, com uma adicional de que as primeiras diferenças defasadas das variáveis não estejam correlacionadas com os efeitos individuais não observados.
+
+
+
+### Questão 4 — Diagnósticos e escolha do estimador
+
+O argumento não é suficiente, pois um valor-p maior no teste J de Hansen não significa isoladamente que o estimador seja superior. A escolha deve considerar não apenas o teste de Hansen, mas também a magnitude e a precisão dos coeficientes, além dos testes de autocorrelação AR(1) e AR(2). Em nosso caso, ambos os modelos apresentam diagnósticos satisfatórios com AR(1) significativo, AR(2) não significativo e os testes de Hansen não rejeitam a validade conjunta dos instrumentos, mas nas estimativas dos coeficientes, o GMM em sistema se saiu melhor, com um resultado entre os coeficientes estimados por MQO e efeitos fixos, além de menor erro-padrão.
+
+
+
+
+
+
+
+## Referências
+
+- ARELLANO, M.; BOND, S. Some tests of specification for panel data: Monte Carlo evidence and an application to employment equations. *The Review of Economic Studies*, v. 58, n. 2, p. 277–297, 1991.
+- BLUNDELL, R.; BOND, S. Initial conditions and moment restrictions in dynamic panel data models. *Journal of Econometrics*, v. 87, n. 1, p. 115–143, 1998.
+- HANSEN, B. E. *Econometrics*. Princeton University Press, 2022. Exercício 17.17.
+- ROODMAN, D. A note on the theme of too many instruments. *Oxford Bulletin of Economics and Statistics*, v. 71, n. 1, p. 135–158, 2009.
+- WINDMEIJER, F. A finite sample correction for the variance of linear efficient two-step GMM estimators. *Journal of Econometrics*, v. 126, n. 1, p. 25–51, 2005.

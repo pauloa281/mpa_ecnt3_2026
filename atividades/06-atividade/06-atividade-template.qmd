@@ -1,0 +1,540 @@
+---
+title: "Econometria III <br> Atividade 6"
+subtitle: "Diferenças em Diferenças com R"
+author: "Paulo Aragão Daldegan"
+lang: pt-BR
+format:
+  html:
+    toc: true
+    embed-resources: true
+execute:
+  echo: true
+  warning: false
+  message: false
+---
+
+
+```{r}
+#| label: setup
+#| include: false
+
+# Define exibição com 5 dígitos e reduz notação científica.
+options(digits = 5, scipen = 999)
+
+# Carrega os pacotes usados
+library(here)
+library(haven)
+library(tidyverse)
+library(fixest)
+
+# Monta o caminho da base dentro do projeto.
+arquivo_rac <- here("dados/brutos/RAC.dta")
+
+# Lê a base e armazena no objeto de trabalho.
+dados_did <- haven::read_dta(arquivo_rac)
+```
+
+
+
+## Pergunta e desenho da análise
+
+O artigo de Schiozer, Mourad e Martins (2021),
+[*A Tutorial on the Use of Differences-in-Differences in Management,
+Finance, and Accounting*](https://doi.org/10.1590/1982-7849rac2021200067){target="_blank"},
+apresenta os fundamentos do método de **Diferenças em Diferenças (DiD)**,
+suas hipóteses de identificação, limitações e procedimentos de
+avaliação. Para ilustrar o método, os autores investigam como o aumento
+da percepção de garantias governamentais durante a crise financeira
+de 2008 afetou o risco dos bancos.
+
+A pesquisa considera duas explicações concorrentes. Segundo a
+**hipótese do risco moral**, a expectativa de proteção reduz os
+incentivos dos depositantes para monitorar os bancos e pode estimular
+uma maior exposição ao risco. Pela **hipótese do valor da franquia
+bancária**, a proteção proporciona vantagens de financiamento que
+os bancos desejam preservar, incentivando um comportamento mais
+prudente.
+
+A crise de 2008 é utilizada como um choque que aumentou a percepção
+de proteção dos bancos classificados como passíveis de receber apoio
+externo. Essa classificação, baseada em avaliações anteriores à crise
+de uma agência de classificação de risco, permite distinguir os
+bancos protegidos (tratamento) dos não protegidos (controle).
+O tratamento não corresponde necessariamente ao recebimento
+efetivo de recursos governamentais.
+
+A aplicação utiliza um painel não balanceado de 900 bancos de
+14 países da OCDE, com 3.324 observações entre 2005 e 2010.
+O estimador DiD compara a mudança média do risco dos bancos protegidos
+com aquela observada nos bancos não protegidos, antes e durante
+a crise. Sua interpretação causal depende de hipóteses de
+identificação, especialmente a de **tendências paralelas**.
+
+A variável dependente, `w_ln_zScore`, corresponde ao logaritmo
+natural do Z-score bancário, com tratamento dos valores extremos
+por winsorização. O Z-score relaciona rentabilidade, capitalização
+e volatilidade dos resultados à distância em relação à insolvência.
+**Quanto menor o Z-score, maior o risco bancário.**
+
+
+
+
+## Preparação e exploração dos dados
+
+### Da base à amostra de análise
+
+Abra o template no projeto da disciplina e execute primeiro o bloco
+`setup`. Ele carrega os pacotes e importa `dados/brutos/RAC.dta` para
+o objeto `dados_did`. Execute os blocos seguintes na ordem em que
+aparecem, pois eles usam objetos criados nas etapas anteriores.
+
+O primeiro bloco de preparação cria `amostra_did` com as observações
+de 2005 a 2010. Ele mantém o identificador do banco (`indexNumber`),
+o ano e as três variáveis descritas acima (`treated`, `crisis` e
+`w_ln_zScore`). Ao final, as linhas ficam ordenadas por banco e ano.
+
+```{r}
+#| label: preparar-amostra-1
+
+# Seleciona e organiza a amostra da análise DiD a partir do arquivo importado.
+amostra_did <- dados_did |>
+  # between() filtra os anos no intervalo de 2005 a 2010, inclusive.
+  filter(between(year, 2005, 2010)) |>
+  # Seleciona apenas as variáveis usadas na atividade.
+  select(indexNumber, year, treated, crisis, w_ln_zScore) |>
+  # Ordena por banco e ano.
+  arrange(indexNumber, year)
+
+# Exibe a estrutura, os tipos e exemplos de valores das variáveis.
+glimpse(amostra_did)
+```
+
+### Dimensões e composição da amostra
+
+Cada linha da amostra representa um banco em um ano. O próximo bloco
+conta as observações e os bancos distintos. Um mesmo banco pode
+contribuir com várias linhas.
+
+```{r}
+#| label: preparar-amostra-2
+
+# Resume a cobertura total da amostra.
+amostra_did |>
+  summarise(
+    # n() conta observações banco–ano.
+    observacoes = n(),
+    # n_distinct() conta bancos únicos.
+    bancos = n_distinct(indexNumber),
+    # Conta anos distintos representados.
+    anos = n_distinct(year)
+  )
+```
+
+```{r}
+#| label: observacoes-ano-did
+
+# Conta observações por ano para comparar a cobertura temporal.
+amostra_did |>
+  count(year, name = "observacoes")
+```
+
+```{r}
+#| label: periodos-banco-did
+
+# Resume a distribuição do número de anos observados por banco.
+periodos_banco <- amostra_did |>
+  # Conta quantos anos cada banco aparece na amostra.
+  count(indexNumber, name = "n_anos") |>
+  # Conta quantos bancos têm cada número de anos observados.
+  count(n_anos, name = "bancos")
+
+# Exibe a distribuição de períodos por banco.
+periodos_banco
+```
+
+```{r}
+#| label: distribuicao-grupos-did
+
+# Compara a cobertura entre grupos e períodos.
+amostra_did |>
+  group_by(treated, crisis) |>
+  summarise(
+    # Conta observações banco–ano em cada combinação.
+    observacoes = n(),
+    # Conta bancos distintos em cada combinação.
+    bancos = n_distinct(indexNumber)
+  )
+```
+
+A amostra tem **3.324 observações de 900 bancos**. Como o painel é
+não balanceado, vale verificar quantos bancos aparecem nos dois
+períodos da comparação. O bloco abaixo usa `any()` para verificar
+se cada banco tem pelo menos um registro antes e durante a crise.
+Depois, conta os bancos em cada combinação de presença.
+
+```{r}
+#| label: composicao-amostra
+
+# Identifica a presença de cada banco antes e durante a crise.
+amostra_did |>
+  # Agrupa observações de cada banco para avaliar presença por período.
+  group_by(indexNumber) |>
+  summarise(
+    # any() verifica se o banco tem pelo menos uma observação antes da crise.
+    antes = any(crisis == 0),
+    # any() verifica se o banco tem pelo menos uma observação durante a crise.
+    durante = any(crisis == 1)
+  ) |>
+  # Conta bancos em cada combinação de presença (antes × durante).
+  count(antes, durante, name = "bancos")
+```
+
+Dos 900 bancos, 326 aparecem nos dois períodos. Portanto, mudanças nas médias dos grupos podem refletir mudanças no risco e na composição dos bancos observados.
+
+### Médias anuais e gráfico
+
+Para acompanhar a evolução dos grupos, calculamos a média do
+logaritmo do Z-score por ano e condição de proteção. A tabela
+`medias_anuais` também mostra quantas observações entram em cada
+média e fornece os dados para o gráfico.
+
+```{r}
+#| label: medias-anuais-did
+
+# Calcula médias anuais para o gráfico de tendências.
+medias_anuais <- amostra_did |>
+  # Agrupa por ano e condição de proteção.
+  group_by(year, treated) |>
+  # Resume cada combinação em uma linha.
+  summarise(
+    # Calcula a média do log do Z-score.
+    media_ln_z = mean(w_ln_zScore),
+    # Registra o tamanho amostral em cada célula.
+    observacoes = n()
+  ) |>
+  # Cria os rótulos dos grupos para a legenda.
+  mutate(
+    grupo = if_else(treated == 1, "Protegidos", "Não protegidos")
+  )
+
+# Exibe médias e tamanhos amostrais por ano e grupo.
+medias_anuais
+```
+
+No gráfico, cada ponto representa uma média anual. A linha tracejada
+entre 2007 e 2008 separa o período anterior à crise do período da crise.
+
+```{r}
+#| label: fig-tendencias-did
+#| fig-cap: "Evolução da média anual do logaritmo do Z-score dos bancos protegidos e não protegidos (2005–2010). A linha tracejada separa os períodos anterior e posterior ao início da crise financeira."
+
+# Plota a trajetória média dos dois grupos ao longo do tempo.
+ggplot(
+  # Usa a tabela de médias anuais.
+  medias_anuais,
+  # Define eixos e cor por grupo.
+  aes(x = year, y = media_ln_z, color = grupo)
+) +
+  # Liga os pontos anuais de cada grupo.
+  geom_line(linewidth = 1) +
+  # Marca cada média anual com um ponto.
+  geom_point(size = 2.5) +
+  # Cria reta vertical que marca a transição entre pré-crise e crise.
+  geom_vline(xintercept = 2007.5, linetype = "dashed") +
+  # Define os anos mostrados no eixo x.
+  scale_x_continuous(breaks = 2005:2010) +
+  # Define rótulos dos eixos e da legenda.
+  labs(
+    x = "Ano",
+    y = "Média do logaritmo do Z-score",
+    color = "Grupo"
+  ) +
+  # Usa um tema com poucos elementos para facilitar a leitura.
+  theme_minimal()
+```
+
+A @fig-tendencias-did mostra trajetórias distintas antes de 2008 e uma queda
+das médias dos dois grupos no início da crise. A hipótese de **tendências
+paralelas** se refere ao que teria ocorrido sem a mudança diferencial na percepção
+de proteção. As médias observadas antes da crise ajudam a avaliar a plausibilidade
+dessa hipótese, tendo em vista a mudança na composição da amostra.
+
+
+
+## Dupla diferença e regressão básica
+
+Calcule a mudança da média do log do Z-score entre os dois períodos para cada grupo. A DiD é a mudança dos bancos protegidos menos a mudança dos bancos não protegidos. Cada média usa as observações banco–ano da respectiva célula.
+
+```{r}
+#| label: dupla-diferenca
+
+# Calcula as quatro médias e a variação de cada grupo.
+tabela_did <- amostra_did |>
+  # Agrupa por tratamento e período.
+  group_by(treated, crisis) |>
+  # Calcula a média em cada célula do desenho DiD e encerra o agrupamento.
+  summarise(media_ln_z = mean(w_ln_zScore), .groups = "drop") |>
+  # Codifica crisis = 1 como "durante" e crisis = 0 como "antes".
+  mutate(periodo = if_else(crisis == 1, "durante", "antes")) |>
+  # pivot_wider() coloca os dois períodos lado a lado.
+  pivot_wider(
+    # Mantém uma linha por grupo.
+    id_cols = treated,
+    # Usa períodos como nomes de coluna.
+    names_from = periodo,
+    # Preenche com as médias calculadas.
+    values_from = media_ln_z
+  ) |>
+  # Calcula a variação dentro de cada grupo.
+  mutate(variacao = durante - antes)
+
+# Exibe as médias antes e durante a crise e a variação por grupo.
+tabela_did
+
+# Calcula a dupla diferença pela variação dos tratados menos a do controle.
+did_manual <- tabela_did$variacao[tabela_did$treated == 1] -
+  tabela_did$variacao[tabela_did$treated == 0]
+```
+
+Na regressão básica, `crisis` capta a mudança média no grupo de controle e `treated` capta a diferença entre grupos antes da crise. O coeficiente de `crisis:treated` mede a dupla diferença. `vcov = ~indexNumber` agrupa os erros-padrão por banco para acomodar a dependência entre observações da mesma instituição.
+
+```{r}
+#| label: regressao-basica
+
+# Estima a DiD via regressão linear.
+modelo_did <- feols(
+  # Inclui período, tratamento e interação.
+  w_ln_zScore ~ crisis + treated + crisis:treated,
+  # Usa a mesma amostra da etapa descritiva.
+  data = amostra_did,
+  # Agrupa erros-padrão por banco.
+  vcov = ~indexNumber
+)
+
+# Exibe coeficientes, erros-padrão, valores-p e ajuste do modelo.
+summary(modelo_did)
+
+# Compara a DiD manual com o coeficiente da regressão.
+c(
+  # Valor obtido pela dupla diferença das médias.
+  dupla_diferenca = did_manual,
+  # Coeficiente da interação (estimativa DiD na regressão).
+  regressao = coef(modelo_did)[["crisis:treated"]]
+)
+```
+
+Os dois cálculos retornam aproximadamente −0,3103. Em pontos do log do Z-score,
+o sinal negativo indica uma queda média maior entre os bancos protegidos.
+
+
+
+## DiD com efeitos fixos
+
+Após `|`, `indexNumber` inclui efeitos fixos de banco, que absorvem as diferenças persistentes entre instituições, inclusive o indicador `treated`. Acrescentar `year` permite controlar choques comuns a cada ano e absorve `crisis`. As duas especificações mantêm a interação. Para estimá-las, excluímos os bancos com uma única observação e contamos os parâmetros dos efeitos fixos na correção dos erros-padrão para amostras finitas.
+
+```{r}
+#| label: regressao-efeitos-fixos
+
+# Cria amostra para modelos com efeitos fixos de banco.
+amostra_fe <- amostra_did |>
+  # Agrupa por banco para contar linhas por unidade.
+  group_by(indexNumber) |>
+  # Mantém apenas bancos com pelo menos duas observações (n() > 1).
+  filter(n() > 1) |>
+  # Remove o agrupamento após o filtro.
+  ungroup()
+
+# Resume o tamanho da amostra após o filtro.
+amostra_fe |>
+  summarise(
+    # Conta observações restantes.
+    observacoes = n(),
+    # Conta bancos distintos restantes.
+    bancos = n_distinct(indexNumber)
+  )
+
+# Estima a DiD com efeitos fixos de banco.
+modelo_fe_banco <- feols(
+  # Inclui período, interação e efeito fixo por banco.
+  w_ln_zScore ~ crisis + crisis:treated | indexNumber,
+  # Usa a amostra filtrada para efeitos fixos.
+  data = amostra_fe,
+  # Agrupa erros-padrão por banco.
+  vcov = ~indexNumber,
+  # Ajusta graus de liberdade contando parâmetros dos efeitos fixos.
+  ssc = ssc(K.fixef = "full")
+)
+
+# Exibe coeficientes, erros-padrão, valores-p e ajuste do modelo.
+summary(modelo_fe_banco)
+
+# Estima a DiD com efeitos fixos de banco e ano.
+modelo_fe_bidirecional <- feols(
+  # Inclui interação e efeitos fixos bidirecionais.
+  w_ln_zScore ~ crisis:treated | indexNumber + year,
+  # Usa a mesma amostra do modelo com efeitos fixos de banco.
+  data = amostra_fe,
+  # Mantém erros-padrão agrupados por banco.
+  vcov = ~indexNumber,
+  # Ajusta graus de liberdade contando parâmetros dos efeitos fixos.
+  ssc = ssc(K.fixef = "full")
+)
+
+# Exibe o coeficiente da interação, seu erro-padrão, valor-p e o ajuste.
+summary(modelo_fe_bidirecional)
+```
+
+
+
+## Comparação dos resultados
+
+```{r}
+#| label: comparacao-modelos-did
+
+# Define os três modelos comparados no data frame final.
+modelos <- list(
+  "(1) DiD básico" = modelo_did,
+  "(5) EF de banco" = modelo_fe_banco,
+  "(6) EF de banco e ano" = modelo_fe_bidirecional
+)
+
+# Define rótulos de linhas para o data frame.
+rotulos <- c(
+  # Rótulos dos coeficientes principais.
+  "(Intercept)" = "Constante",
+  "crisis" = "Período de crise",
+  "treated" = "Banco protegido",
+  "crisis:treated" = "Crise × banco protegido",
+  # Rótulos das dimensões de efeitos fixos.
+  "indexNumber" = "Efeitos fixos de banco",
+  "year" = "Efeitos fixos de ano",
+  # Rótulos das estatísticas de ajuste.
+  "n" = "Observações",
+  "r2" = "R²",
+  "wr2" = "R² within"
+)
+
+# Gera um data frame-resumo dos modelos.
+tabela <- fixest::etable(
+  # Define modelos e ordem das colunas.
+  modelos,
+  # Usa os erros-padrão já embutidos em cada modelo.
+  vcov = NULL,
+  # Mantém saída em objeto data frame (não LaTeX).
+  tex = FALSE,
+  # Desativa formatação markdown interna.
+  markdown = FALSE,
+  # Aplica os rótulos definidos acima.
+  dict = rotulos,
+  # Exibe coeficientes e erros com quatro casas.
+  digits = "r4",
+  # Exibe estatísticas com quatro casas.
+  digits.stats = "r4",
+  # Remove estrelas de significância.
+  signif.code = NA,
+  # Mostra erro-padrão na mesma linha do coeficiente.
+  se.below = FALSE,
+  # Oculta cabeçalho da variável dependente (já informado no texto).
+  depvar = FALSE,
+  # Oculta linha extra sobre erros-padrão (já informada na nota).
+  se.row = FALSE,
+  # Inclui observações, R² total e R² within.
+  fitstat = ~ n + r2 + wr2,
+  # Ajusta rótulos visuais para saída HTML.
+  style.df = fixest::style.df(
+    # Indica presença de efeitos fixos como Sim/Não.
+    yesNo = c("Sim", "Não"),
+    # Remove títulos/separadores não essenciais.
+    fixef.title = " ",
+    fixef.line = " ",
+    stats.title = " ",
+    stats.line = " "
+  )
+)
+
+# Renderiza o data frame final no HTML da atividade.
+knitr::kable(
+  # trimws() remove espaços; nzchar() mantém apenas rótulos não vazios.
+  tabela[nzchar(trimws(tabela[[1]])), ],
+  # Define saída em HTML.
+  format = "html",
+  # Remove numeração automática de linhas.
+  row.names = FALSE,
+  # Define os nomes das colunas.
+  col.names = c("Termo", names(modelos)),
+  # Alinha rótulos à esquerda e coeficientes à direita.
+  align = "lrrr",
+  # Informa a variável dependente dos modelos.
+  caption = "Variável dependente: log do Z-score"
+)
+```
+
+*Nota.* Erros-padrão agrupados por banco.
+
+Para consultar os valores-p da interação, use `summary()` nos objetos
+dos modelos estimados acima. Na passagem para os modelos com efeitos
+fixos, a amostra perde 31 observações. Uma interpretação causal continua
+dependendo das hipóteses de identificação, incluindo tendências paralelas.
+
+
+
+## Respostas ao exercício
+
+
+### a) Reprodução do DiD básico com o pacote `did`
+
+Substitua `NA` no argumento `panel` por `TRUE` ou `FALSE`,
+conforme a estrutura dos dados, e execute o código. Para 
+testar o código substitua `false` por `true` em 
+`#| eval: false`.
+
+Informe a estimativa obtida com o pacote `did` e compare-a
+com a do modelo DiD básico estimado anteriormente.
+
+```{r}
+#| label: exercicio-did-basico
+#| eval: false
+
+# Estima o DiD básico com o pacote did.
+modelo_did_pacote <- did::att_gt(
+  # Define o logaritmo do Z-score como variável dependente.
+  yname = "w_ln_zScore",
+  # Identifica os períodos anterior e durante a crise.
+  tname = "crisis",
+  # Identifica o início do tratamento e os bancos nunca tratados.
+  gname = "treated",
+  # Utiliza a mesma amostra da regressão DiD básica.
+  data = amostra_did,
+  # Substitua NA por TRUE ou FALSE.
+  panel = FALSE,
+  # Calcula apenas a estimativa pontual.
+  compute_inffunc = FALSE
+)
+
+# Exibe a estimativa pontual do efeito do tratamento.
+modelo_did_pacote$att
+```
+
+
+**Resposta:**
+
+A estimativa obtida pelo pacote `did` foi de -0,3103, ou seja, o mesmo valor obtido na estimativa do did básico anteriormente.
+
+
+
+### b) Efeitos fixos e identificação causal
+
+Suponha que, durante a crise financeira de 2008, uma mudança
+regulatória tenha afetado especialmente os bancos protegidos,
+independentemente do aumento da percepção de garantias
+governamentais.
+
+Explique por que essa situação poderia comprometer a interpretação
+causal do estimador DiD. A inclusão de efeitos fixos de banco e
+de ano seria suficiente para resolver esse problema? Justifique.
+
+**Resposta:**
+
+Essa situação iria comprometer a interpretação causal do estimador DiD porque a mudança regulatória afetaria especialmente os bancos protegidos. Assim, o efeito estimado pelo DiD poderia capturar não apenas o impacto do aumento da percepção de garantias, mas conjuntamente também os efeitos da mudança regulatória. Com isso, violaria a hipótese de tendências paralelas, pois os bancos protegidos poderiam apresentar uma trajetória diferente da dos bancos não protegidos após a crise de 2008, mesmo sem o tratamento.
+
+A inclusão de efeitos fixos de banco e de ano não seria suficiente para resolver o problema. Os efeitos fixos de banco controlam características individuais não observadas supondo que não há variação ao longo do tempo, enquanto os efeitos fixos de ano controlam choques comuns a todos os bancos em determinado período; mas nenhum deles controla uma mudança regulatória que afeta especificamente os bancos protegidos em determinado momento.
